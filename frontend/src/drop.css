@@ -1,0 +1,5 @@
+.workspace { position: relative; }
+.workspace.is-dragging { background: #e8efe3; }
+.drop-overlay { position: absolute; z-index: 2; inset: 22px; display: grid; place-content: center; justify-items: center; gap: 10px; border: 2px dashed #9b4d32; background: rgba(244,242,235,.92); color: #9b4d32; }
+.drop-overlay strong { color: #17211f; font-family: Georgia, serif; font-size: 25px; font-weight: 400; }
+.drop-overlay span { color: #68736d; font-size: 13px; }

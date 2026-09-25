@@ -1,0 +1,205 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum Permission {
+  VIEW
+  EDIT
+}
+
+enum ActivityAction {
+  LOGIN
+  LOGOUT
+  FILE_UPLOAD
+  FILE_DOWNLOAD
+  FILE_DELETE
+  FILE_RESTORE
+  FILE_RENAME
+  FOLDER_CREATE
+  FOLDER_RENAME
+  SHARE_CREATED
+  SHARE_REMOVED
+}
+
+enum EntityType {
+  USER
+  FILE
+  FOLDER
+  SHARE
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  passwordHash  String
+  role          Role      @default(USER)
+  avatarUrl     String?
+  storageQuota  BigInt    @default(5368709120)
+  storageUsed   BigInt    @default(0)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+
+  ownedFiles    File[]            @relation("FileOwner")
+  ownedFolders  Folder[]          @relation("FolderOwner")
+  sharesOwned   Share[]           @relation("ShareOwner")
+  sharesGiven   Share[]           @relation("ShareTarget")
+  starredItems  StarredItem[]
+  trashItems    TrashItem[]
+  activities    Activity[]
+  uploadSessions UploadSession[]
+}
+
+model Folder {
+  id        String    @id @default(cuid())
+  name      String
+  parentId  String?
+  ownerId   String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  parent      Folder?        @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Folder[]       @relation("FolderHierarchy")
+  owner       User           @relation("FolderOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  files       File[]
+  shares      Share[]
+  starred     StarredItem[]
+  trashItems TrashItem[]
+  uploadSessions UploadSession[]
+
+  @@index([ownerId])
+  @@index([parentId])
+  @@index([deletedAt])
+}
+
+model File {
+  id           String    @id @default(cuid())
+  name         String
+  originalName String
+  mimeType     String
+  size         BigInt
+  storageKey   String
+  ownerId      String
+  folderId     String?
+  version      Int       @default(1)
+  checksum     String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  owner      User           @relation("FileOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  folder     Folder?        @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  shares     Share[]
+  starred    StarredItem[]
+  trashItems TrashItem[]
+
+  @@index([ownerId])
+  @@index([folderId])
+  @@index([deletedAt])
+  @@index([createdAt])
+}
+
+model Share {
+  id               String    @id @default(cuid())
+  fileId           String?
+  folderId         String?
+  ownerId          String
+  sharedWithUserId String
+  permission       Permission @default(VIEW)
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime?
+
+  file           File?  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  folder         Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  owner          User   @relation("ShareOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  sharedWithUser User   @relation("ShareTarget", fields: [sharedWithUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@index([sharedWithUserId])
+  @@index([fileId])
+  @@index([folderId])
+}
+
+model StarredItem {
+  id        String   @id @default(cuid())
+  userId    String
+  fileId    String?
+  folderId  String?
+  createdAt DateTime @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file   File?   @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  folder Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([fileId])
+  @@index([folderId])
+  @@unique([userId, fileId])
+  @@unique([userId, folderId])
+}
+
+model TrashItem {
+  id        String    @id @default(cuid())
+  userId    String
+  fileId    String?
+  folderId  String?
+  deletedAt DateTime  @default(now())
+  reason    String?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file   File?   @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  folder Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([deletedAt])
+  @@index([fileId])
+  @@index([folderId])
+}
+
+model Activity {
+  id         String         @id @default(cuid())
+  userId     String
+  action     ActivityAction
+  entityType EntityType
+  entityId   String
+  metadata   String?
+  createdAt  DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([entityType])
+}
+
+model UploadSession {
+  id           String    @id @default(cuid())
+  userId       String
+  folderId     String?
+  name         String
+  originalName String
+  mimeType     String
+  size         BigInt
+  storageKey   String   @unique
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder Folder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([expiresAt])
+}

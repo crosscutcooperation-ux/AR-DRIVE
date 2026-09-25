@@ -1,0 +1,24 @@
+.create-control { position: relative; margin: 45px 0 24px; }
+.create-control .new-button { width: 100%; margin: 0; }
+.create-menu, .folder-menu { position: absolute; z-index: 5; min-width: 180px; padding: 5px; border: 1px solid var(--line); background: #fffefa; box-shadow: 0 10px 28px rgba(23, 33, 31, .14); }
+.create-menu { top: calc(100% + 6px); left: 0; right: 0; }
+.create-menu button, .folder-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 10px; border: 0; background: transparent; color: var(--ink); text-align: left; font-size: 13px; }
+.create-menu button:hover, .folder-menu button:hover { background: var(--soft); }
+.folder-item { position: relative; padding: 0; }
+.folder-open { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; min-height: 142px; padding: 18px 48px 18px 18px; border: 0; background: transparent; color: var(--ink); text-align: left; }
+.folder-open svg { color: var(--rust); }
+.folder-open span { overflow: hidden; width: 100%; font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.folder-open small { color: var(--muted); font-size: 11px; }
+.folder-menu-trigger { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 30px; height: 30px; border: 0; background: transparent; color: var(--muted); }
+.folder-menu-trigger:hover { background: var(--soft); color: var(--ink); }
+.folder-menu { top: 43px; right: 10px; }
+.dialog-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(23, 33, 31, .38); }
+.folder-dialog { position: relative; width: min(100%, 420px); padding: 30px; border: 1px solid var(--line); background: var(--paper); box-shadow: 0 20px 60px rgba(23, 33, 31, .2); }
+.folder-dialog h2 { margin: 0 0 22px; font-family: Georgia, serif; font-size: 30px; font-weight: 400; }
+.folder-dialog form { display: grid; gap: 10px; }
+.folder-dialog label { color: var(--muted); font-size: 12px; }
+.folder-dialog input { width: 100%; padding: 12px; border: 1px solid var(--line); background: white; outline-color: var(--rust); }
+.dialog-close { position: absolute; top: 14px; right: 14px; display: grid; place-items: center; width: 32px; height: 32px; border: 0; background: transparent; color: var(--muted); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.secondary-button { padding: 12px 16px; border: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 12px; }
+@media (max-width: 720px) { .create-control { margin: 22px 0 14px; } }
