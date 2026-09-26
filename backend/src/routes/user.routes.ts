@@ -43,7 +43,7 @@ router.get('/', async (request, response) => {
     prisma.user.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
     prisma.user.count({ where }),
   ])
-  response.json({ success: true, data: { users: users.map(toPublicUser), pagination: { page, limit, total, pages: Math.ceil(total / limit) } } })
+  response.json({ success: true, data: { users: users.map((user) => toPublicUser(user)), pagination: { page, limit, total, pages: Math.ceil(total / limit) } } })
 })
 
 router.get('/:id', async (request, response) => {

@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Response } from 'express'
 import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
 import { prisma } from '../config/prisma.js'
@@ -185,7 +185,7 @@ async function streamFile(file: { storageKey: string; mimeType: string; original
   else response.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.originalName)}"`)
   response.setHeader('Content-Length', file.size.toString())
   try {
-    await pipeline(storage.createReadStream(file.storageKey), response)
+    await pipeline(storage.createReadStream(file.storageKey), response as unknown as NodeJS.WritableStream)
   } catch {
     if (!response.headersSent) response.status(404).json({ success: false, error: { code: 'FILE_CONTENT_NOT_FOUND', message: 'File content is unavailable' } })
     else response.destroy()
