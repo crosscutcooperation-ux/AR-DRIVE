@@ -115,6 +115,17 @@ function App() {
     }
   }
 
+  async function deleteForever(id: string, type: 'file' | 'folder') {
+    setFileMenuId(null)
+    setFolderMenuId(null)
+    try {
+      await api.delete(`/trash/${id}`)
+      await loadView()
+    } catch (error) {
+      setMessage(apiErrorMessage(error, `Unable to permanently delete this ${type}.`))
+    }
+  }
+
   async function uploadFiles(selected: FileList | null) {
     if (!selected) return
     let uploadError = ''
@@ -174,7 +185,7 @@ function App() {
       {message && <div className="notice">{message}</div>}
       {searchResults && <div className="search-label">Search results <button onClick={() => setSearchResults(null)}>Clear</button></div>}
       {view === 'drive' && folderId && <button className="back-button" onClick={() => setFolderId(null)}>&larr; Back to root</button>}
-      <div className="content-grid">{visibleFolders.map((folder) => <article className="item-card folder-item" key={folder.id}><button className="folder-open" onDoubleClick={() => { setView('drive'); setFolderId(folder.id); setSearchResults(null) }}><Folder size={27} /><span>{folder.name}</span><small>Folder</small></button><button className="folder-menu-trigger" aria-label={`Actions for ${folder.name}`} aria-expanded={folderMenuId === folder.id} onClick={() => setFolderMenuId(folderMenuId === folder.id ? null : folder.id)}><MoreHorizontal size={18} /></button>{folderMenuId === folder.id && <div className="folder-menu" role="menu"><button role="menuitem" onClick={() => void deleteFolder(folder)}><Trash2 size={15} /> Move to trash</button></div>}</article>)}{visibleFiles.map((file) => <article className="item-card file-item" key={file.id}><button className="file-open" onDoubleClick={() => void openFile(file)}><File size={27} /><span>{file.name}</span><small>{formatBytes(file.size)}</small></button><button className="file-menu-trigger" aria-label={`Actions for ${file.name}`} aria-expanded={fileMenuId === file.id} onClick={() => setFileMenuId(fileMenuId === file.id ? null : file.id)}><MoreHorizontal size={18} /></button>{fileMenuId === file.id && <div className="file-menu folder-menu" role="menu"><button role="menuitem" onClick={() => openRenameDialog(file)}>Rename</button><button role="menuitem" onClick={() => void deleteFile(file)}><Trash2 size={15} /> Move to trash</button></div>}</article>)}</div>
+      <div className="content-grid">{visibleFolders.map((folder) => <article className="item-card folder-item" key={folder.id}><button className="folder-open" onDoubleClick={() => { setView('drive'); setFolderId(folder.id); setSearchResults(null) }}><Folder size={27} /><span>{folder.name}</span><small>Folder</small></button><button className="folder-menu-trigger" aria-label={`Actions for ${folder.name}`} aria-expanded={folderMenuId === folder.id} onClick={() => setFolderMenuId(folderMenuId === folder.id ? null : folder.id)}><MoreHorizontal size={18} /></button>{folderMenuId === folder.id && <div className="folder-menu" role="menu">{view === 'trash' ? <button role="menuitem" onClick={() => void deleteForever(folder.id, 'folder')}><Trash2 size={15} /> Delete forever</button> : <button role="menuitem" onClick={() => void deleteFolder(folder)}><Trash2 size={15} /> Move to trash</button>}</div>}</article>)}{visibleFiles.map((file) => <article className="item-card file-item" key={file.id}><button className="file-open" onDoubleClick={() => void openFile(file)}><File size={27} /><span>{file.name}</span><small>{formatBytes(file.size)}</small></button><button className="file-menu-trigger" aria-label={`Actions for ${file.name}`} aria-expanded={fileMenuId === file.id} onClick={() => setFileMenuId(fileMenuId === file.id ? null : file.id)}><MoreHorizontal size={18} /></button>{fileMenuId === file.id && <div className="file-menu folder-menu" role="menu">{view === 'trash' ? <button role="menuitem" onClick={() => void deleteForever(file.id, 'file')}><Trash2 size={15} /> Delete forever</button> : <><button role="menuitem" onClick={() => openRenameDialog(file)}>Rename</button><button role="menuitem" onClick={() => void deleteFile(file)}><Trash2 size={15} /> Move to trash</button></>}</div>}</article>)}</div>
       {!visibleFolders.length && !visibleFiles.length && <div className="empty-state"><LayoutGrid size={28} /><strong>Nothing here yet</strong><span>Create a folder or upload a file to get started.</span></div>}
     </main>
     {folderDialogOpen && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title"><button className="dialog-close" aria-label="Close" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button><p className="eyebrow">My Drive</p><h2 id="folder-dialog-title">Create a folder</h2><form onSubmit={(event) => void createFolder(event)}><label htmlFor="new-folder-name">Folder name</label><input id="new-folder-name" autoFocus value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} maxLength={120} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>Cancel</button><button type="submit" className="primary-button">Create folder</button></div></form></section></div>}
