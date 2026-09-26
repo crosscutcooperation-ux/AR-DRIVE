@@ -12,6 +12,13 @@
 .folder-menu-trigger { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 30px; height: 30px; border: 0; background: transparent; color: var(--muted); }
 .folder-menu-trigger:hover { background: var(--soft); color: var(--ink); }
 .folder-menu { top: 43px; right: 10px; }
+.file-item { position: relative; padding: 0; }
+.file-open { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; min-height: 142px; padding: 18px 48px 18px 18px; border: 0; background: transparent; color: var(--ink); text-align: left; }
+.file-open svg { color: var(--rust); }
+.file-open span { overflow: hidden; width: 100%; font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.file-open small { color: var(--muted); font-size: 11px; }
+.file-menu-trigger { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 30px; height: 30px; border: 0; background: transparent; color: var(--muted); }
+.file-menu-trigger:hover { background: var(--soft); color: var(--ink); }
 .dialog-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(23, 33, 31, .38); }
 .folder-dialog { position: relative; width: min(100%, 420px); padding: 30px; border: 1px solid var(--line); background: var(--paper); box-shadow: 0 20px 60px rgba(23, 33, 31, .2); }
 .folder-dialog h2 { margin: 0 0 22px; font-family: Georgia, serif; font-size: 30px; font-weight: 400; }
