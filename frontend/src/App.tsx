@@ -26,6 +26,9 @@ function App() {
   const [fileMenuId, setFileMenuId] = useState<string | null>(null)
   const [renameFileId, setRenameFileId] = useState<string | null>(null)
   const [renameFileName, setRenameFileName] = useState('')
+  const [previewFile, setPreviewFile] = useState<FileItem | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<{ name: string; percent: number } | null>(null)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => { api.get('/auth/me').then((result) => setUser(result.data.data.user)).catch(() => undefined).finally(() => setLoading(false)) }, [])
@@ -78,11 +81,14 @@ function App() {
 
   async function deleteFolder(folder: FolderItem) {
     setFolderMenuId(null)
+    setBusyAction('Moving folder to trash')
     try {
       await api.delete(`/folders/${folder.id}`)
       await loadView()
     } catch (error) {
       setMessage(apiErrorMessage(error, 'Unable to move this folder to trash.'))
+    } finally {
+      setBusyAction(null)
     }
   }
 
@@ -95,6 +101,7 @@ function App() {
   async function renameFile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!renameFileId || !renameFileName.trim()) return
+    setBusyAction('Renaming file')
     try {
       await api.patch(`/files/${renameFileId}`, { name: renameFileName.trim() })
       setRenameFileId(null)
@@ -102,27 +109,35 @@ function App() {
       await loadView()
     } catch (error) {
       setMessage(apiErrorMessage(error, 'Unable to rename this file.'))
+    } finally {
+      setBusyAction(null)
     }
   }
 
   async function deleteFile(file: FileItem) {
     setFileMenuId(null)
+    setBusyAction('Moving file to trash')
     try {
       await api.delete(`/files/${file.id}`)
       await loadView()
     } catch (error) {
       setMessage(apiErrorMessage(error, 'Unable to move this file to trash.'))
+    } finally {
+      setBusyAction(null)
     }
   }
 
   async function deleteForever(id: string, type: 'file' | 'folder') {
     setFileMenuId(null)
     setFolderMenuId(null)
+    setBusyAction('Deleting forever')
     try {
       await api.delete(`/trash/${id}`)
       await loadView()
     } catch (error) {
       setMessage(apiErrorMessage(error, `Unable to permanently delete this ${type}.`))
+    } finally {
+      setBusyAction(null)
     }
   }
 
@@ -131,12 +146,14 @@ function App() {
     let uploadError = ''
     for (const file of Array.from(selected)) {
       try {
+        setUploadProgress({ name: file.name, percent: 0 })
         const init = await api.post('/files/upload/initiate', { name: file.name, mimeType: file.type || 'application/octet-stream', size: file.size, folderId })
-        await api.put(init.data.data.uploadPath, file, { headers: { 'Content-Type': file.type || 'application/octet-stream' } })
+        await api.put(init.data.data.uploadPath, file, { headers: { 'Content-Type': file.type || 'application/octet-stream' }, onUploadProgress: (event) => { if (event.total) setUploadProgress({ name: file.name, percent: Math.round(event.loaded / event.total * 100) }) } })
         await api.post('/files/upload/finalize', { sessionId: init.data.data.sessionId })
-      } catch (error) { uploadError = apiErrorMessage(error, `Upload of ${file.name} failed. Check the S3 bucket CORS configuration and network.`) }
+      } catch (error) { uploadError = apiErrorMessage(error, `Upload of ${file.name} failed. Check the local storage directory and network.`) }
     }
     if (fileInput.current) fileInput.current.value = ''
+    setUploadProgress(null)
     await loadView()
     if (uploadError) setMessage(uploadError)
   }
@@ -183,13 +200,15 @@ function App() {
       <header className="workspace-header"><div><p className="eyebrow">Internal workspace</p><h1>{view === 'drive' ? 'My Drive' : view === 'shared' ? 'Shared with me' : view[0].toUpperCase() + view.slice(1)}</h1></div><div className="user-chip"><span>{user.name.slice(0, 1).toUpperCase()}</span>{user.name}</div></header>
       <div className="toolbar"><form className="search-box" onSubmit={(event) => void runSearch(event)}><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search your workspace" /><button type="button" onClick={() => { setSearch(''); setSearchResults(null) }} aria-label="Clear search"><X size={15} /></button></form><button className="upload-button" onClick={() => fileInput.current?.click()}><Upload size={16} /> Upload</button><input ref={fileInput} hidden type="file" multiple onChange={(event) => void uploadFiles(event.target.files)} /></div>
       {message && <div className="notice">{message}</div>}
+      {(uploadProgress || busyAction) && <div className="operation-progress" role="status"><div className="operation-progress-header"><span>{uploadProgress ? `Uploading ${uploadProgress.name}` : busyAction}</span><strong>{uploadProgress ? `${uploadProgress.percent}%` : 'Working...'}</strong></div><div className="operation-progress-track"><i style={{ width: `${uploadProgress?.percent ?? 65}%` }} /></div></div>}
       {searchResults && <div className="search-label">Search results <button onClick={() => setSearchResults(null)}>Clear</button></div>}
       {view === 'drive' && folderId && <button className="back-button" onClick={() => setFolderId(null)}>&larr; Back to root</button>}
-      <div className="content-grid">{visibleFolders.map((folder) => <article className="item-card folder-item" key={folder.id}><button className="folder-open" onDoubleClick={() => { setView('drive'); setFolderId(folder.id); setSearchResults(null) }}><Folder size={27} /><span>{folder.name}</span><small>Folder</small></button><button className="folder-menu-trigger" aria-label={`Actions for ${folder.name}`} aria-expanded={folderMenuId === folder.id} onClick={() => setFolderMenuId(folderMenuId === folder.id ? null : folder.id)}><MoreHorizontal size={18} /></button>{folderMenuId === folder.id && <div className="folder-menu" role="menu">{view === 'trash' ? <button role="menuitem" onClick={() => void deleteForever(folder.id, 'folder')}><Trash2 size={15} /> Delete forever</button> : <button role="menuitem" onClick={() => void deleteFolder(folder)}><Trash2 size={15} /> Move to trash</button>}</div>}</article>)}{visibleFiles.map((file) => <article className="item-card file-item" key={file.id}><button className="file-open" onDoubleClick={() => void openFile(file)}><File size={27} /><span>{file.name}</span><small>{formatBytes(file.size)}</small></button><button className="file-menu-trigger" aria-label={`Actions for ${file.name}`} aria-expanded={fileMenuId === file.id} onClick={() => setFileMenuId(fileMenuId === file.id ? null : file.id)}><MoreHorizontal size={18} /></button>{fileMenuId === file.id && <div className="file-menu folder-menu" role="menu">{view === 'trash' ? <button role="menuitem" onClick={() => void deleteForever(file.id, 'file')}><Trash2 size={15} /> Delete forever</button> : <><button role="menuitem" onClick={() => openRenameDialog(file)}>Rename</button><button role="menuitem" onClick={() => void deleteFile(file)}><Trash2 size={15} /> Move to trash</button></>}</div>}</article>)}</div>
+      <div className="content-grid">{visibleFolders.map((folder) => <article className="item-card folder-item" key={folder.id}><button className="folder-open" onDoubleClick={() => { setView('drive'); setFolderId(folder.id); setSearchResults(null) }}><Folder size={27} /><span>{folder.name}</span><small>Folder</small></button><button className="folder-menu-trigger" aria-label={`Actions for ${folder.name}`} aria-expanded={folderMenuId === folder.id} onClick={() => setFolderMenuId(folderMenuId === folder.id ? null : folder.id)}><MoreHorizontal size={18} /></button>{folderMenuId === folder.id && <div className="folder-menu" role="menu">{view === 'trash' ? <button role="menuitem" onClick={() => void deleteForever(folder.id, 'folder')}><Trash2 size={15} /> Delete forever</button> : <button role="menuitem" onClick={() => void deleteFolder(folder)}><Trash2 size={15} /> Move to trash</button>}</div>}</article>)}{visibleFiles.map((file) => <article className="item-card file-item" key={file.id}><button className="file-open" onClick={() => setPreviewFile(file)} onDoubleClick={() => void openFile(file)}>{isImage(file) ? <img className="file-thumb" src={previewUrl(file)} alt="" /> : <File size={27} />}<span>{file.name}</span><small>{formatBytes(file.size)}</small></button><button className="file-menu-trigger" aria-label={`Actions for ${file.name}`} aria-expanded={fileMenuId === file.id} onClick={() => setFileMenuId(fileMenuId === file.id ? null : file.id)}><MoreHorizontal size={18} /></button>{fileMenuId === file.id && <div className="file-menu folder-menu" role="menu">{view === 'trash' ? <button role="menuitem" onClick={() => void deleteForever(file.id, 'file')}><Trash2 size={15} /> Delete forever</button> : <><button role="menuitem" onClick={() => openRenameDialog(file)}>Rename</button><button role="menuitem" onClick={() => void deleteFile(file)}><Trash2 size={15} /> Move to trash</button></>}</div>}</article>)}</div>
       {!visibleFolders.length && !visibleFiles.length && <div className="empty-state"><LayoutGrid size={28} /><strong>Nothing here yet</strong><span>Create a folder or upload a file to get started.</span></div>}
     </main>
     {folderDialogOpen && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title"><button className="dialog-close" aria-label="Close" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button><p className="eyebrow">My Drive</p><h2 id="folder-dialog-title">Create a folder</h2><form onSubmit={(event) => void createFolder(event)}><label htmlFor="new-folder-name">Folder name</label><input id="new-folder-name" autoFocus value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} maxLength={120} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>Cancel</button><button type="submit" className="primary-button">Create folder</button></div></form></section></div>}
-    {renameFileId && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-file-title"><button className="dialog-close" aria-label="Close" onClick={() => setRenameFileId(null)}><X size={18} /></button><p className="eyebrow">File actions</p><h2 id="rename-file-title">Rename file</h2><form onSubmit={(event) => void renameFile(event)}><label htmlFor="rename-file-name">File name</label><input id="rename-file-name" autoFocus value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} maxLength={255} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setRenameFileId(null)}>Cancel</button><button type="submit" className="primary-button">Save name</button></div></form></section></div>}
+    {renameFileId && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-file-title"><button className="dialog-close" aria-label="Close" onClick={() => setRenameFileId(null)}><X size={18} /></button><p className="eyebrow">File actions</p><h2 id="rename-file-title">Rename file</h2><form onSubmit={(event) => void renameFile(event)}><label htmlFor="rename-file-name">File name</label><input id="rename-file-name" autoFocus value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} maxLength={255} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setRenameFileId(null)} disabled={Boolean(busyAction)}>Cancel</button><button type="submit" className="primary-button" disabled={Boolean(busyAction)}>{busyAction ?? 'Save name'}</button></div></form></section></div>}
+    {previewFile && <PreviewDialog file={previewFile} onClose={() => setPreviewFile(null)} />}
   </div></BrowserRouter>
 }
 
@@ -203,5 +222,13 @@ function Login({ onLogin, onRegister }: { onLogin: (email: string, password: str
 function NavItem({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) { return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}{label}</button> }
 function formatBytes(value: string) { const bytes = Number(value); if (!bytes) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1); return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
 function apiErrorMessage(error: unknown, fallback: string) { return (error as { response?: { data?: { error?: { message?: string } } } }).response?.data?.error?.message ?? fallback }
+function previewUrl(file: FileItem) { return `${api.defaults.baseURL}/files/${file.id}/preview` }
+function isImage(file: FileItem) { return file.mimeType.startsWith('image/') }
+
+function PreviewDialog({ file, onClose }: { file: FileItem; onClose: () => void }) {
+  const url = previewUrl(file)
+  const content = file.mimeType.startsWith('image/') ? <img className="preview-media" src={url} alt={file.name} /> : file.mimeType === 'application/pdf' ? <iframe className="preview-frame" src={url} title={file.name} /> : file.mimeType.startsWith('video/') ? <video className="preview-media" src={url} controls /> : file.mimeType.startsWith('audio/') ? <audio src={url} controls /> : <div className="preview-unavailable">Preview unavailable for this file type.<br />Double-click the file to download it.</div>
+  return <div className="dialog-backdrop" onClick={onClose}><section className="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title" onClick={(event) => event.stopPropagation()}><button className="dialog-close" aria-label="Close preview" onClick={onClose}><X size={18} /></button><h2 id="preview-title">{file.name}</h2>{content}</section></div>
+}
 
 export default App

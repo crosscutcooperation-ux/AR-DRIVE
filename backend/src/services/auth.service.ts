@@ -43,14 +43,14 @@ function verifyToken(token: string, secret: string, type: AuthTokenPayload['type
   return { sub: payload.sub, role: payload.role, type }
 }
 
-export const toPublicUser = (user: User) => ({
+export const toPublicUser = (user: User, actualStorageUsed = user.storageUsed) => ({
   id: user.id,
   name: user.name,
   email: user.email,
   role: user.role,
   avatarUrl: user.avatarUrl,
   storageQuota: user.storageQuota.toString(),
-  storageUsed: user.storageUsed.toString(),
+  storageUsed: actualStorageUsed.toString(),
   isActive: user.isActive,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,

@@ -51,15 +51,16 @@ router.get('/:id/content', async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
     return
   }
-  response.type(file.mimeType)
-  response.attachment(file.originalName)
-  response.setHeader('Content-Length', file.size.toString())
-  try {
-    await pipeline(storage.createReadStream(file.storageKey), response)
-  } catch {
-    if (!response.headersSent) response.status(404).json({ success: false, error: { code: 'FILE_CONTENT_NOT_FOUND', message: 'File content is unavailable' } })
-    else response.destroy()
+  await streamFile(file, response, true)
+})
+
+router.get('/:id/preview', async (request, response) => {
+  const file = await ownedFile(request.params.id, request.user!.id)
+  if (!file) {
+    response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
+    return
   }
+  await streamFile(file, response, false)
 })
 
 router.post('/upload/initiate', async (request, response) => {
@@ -176,6 +177,19 @@ async function ownedFile(id: string, ownerId: string) {
 
 function toFileResponse(file: { id: string; name: string; originalName: string; mimeType: string; size: bigint; ownerId: string; folderId: string | null; version: number; checksum: string | null; createdAt: Date; updatedAt: Date; deletedAt: Date | null }) {
   return { ...file, size: file.size.toString() }
+}
+
+async function streamFile(file: { storageKey: string; mimeType: string; originalName: string; size: bigint }, response: Response, download: boolean) {
+  response.type(file.mimeType)
+  if (download) response.attachment(file.originalName)
+  else response.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.originalName)}"`)
+  response.setHeader('Content-Length', file.size.toString())
+  try {
+    await pipeline(storage.createReadStream(file.storageKey), response)
+  } catch {
+    if (!response.headersSent) response.status(404).json({ success: false, error: { code: 'FILE_CONTENT_NOT_FOUND', message: 'File content is unavailable' } })
+    else response.destroy()
+  }
 }
 
 function normaliseName(value: string) {

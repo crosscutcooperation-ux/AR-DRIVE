@@ -85,7 +85,8 @@ router.get('/me', requireAuth, requireActiveUser, async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } })
     return
   }
-  response.json({ success: true, data: { user: toPublicUser(user) } })
+  const usage = await prisma.file.aggregate({ where: { ownerId: user.id }, _sum: { size: true } })
+  response.json({ success: true, data: { user: toPublicUser(user, usage._sum.size ?? 0n) } })
 })
 
 function setAuthCookies(response: Response, user: { id: string; role: 'ADMIN' | 'USER' }) {
