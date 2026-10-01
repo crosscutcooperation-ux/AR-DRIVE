@@ -193,6 +193,7 @@ model UploadSession {
   originalName String
   mimeType     String
   size         BigInt
+  uploadedBytes BigInt   @default(0)
   storageKey   String   @unique
   expiresAt    DateTime
   createdAt    DateTime @default(now())

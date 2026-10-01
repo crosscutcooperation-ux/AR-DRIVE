@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { BrowserRouter } from 'react-router-dom'
-import { Archive, ChevronRight, File, Folder, FolderPlus, HardDrive, LayoutGrid, LogOut, MoreHorizontal, Plus, RotateCcw, Search, Star, Trash2, Upload, Users, X } from 'lucide-react'
+import { Archive, ChevronRight, Download, File, Folder, FolderPlus, HardDrive, LayoutGrid, LogOut, Menu, MoreHorizontal, Plus, RotateCcw, Search, Star, Trash2, Upload, Users, X } from 'lucide-react'
 import { api, type AdminUser, type FileItem, type Folder as FolderItem, type ShareRecord, type User } from './services/api'
 import './dashboard.css'
 import './drop.css'
@@ -38,6 +38,9 @@ function App() {
   const [sortBy, setSortBy] = useState<'name' | 'updatedAt'>('name')
   const [selectedFile, setSelectedFile] = useState<FileItem | null>(null)
   const [selectedFolder, setSelectedFolder] = useState<FolderItem | null>(null)
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [moveDialogOpen, setMoveDialogOpen] = useState(false)
   const [moveOptions, setMoveOptions] = useState<FolderItem[]>([])
   const [moveTargetId, setMoveTargetId] = useState('')
@@ -45,6 +48,9 @@ function App() {
   const [shareEmail, setShareEmail] = useState('')
   const [sharePermission, setSharePermission] = useState<'VIEW' | 'EDIT'>('VIEW')
   const fileInput = useRef<HTMLInputElement>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
+  const marqueeStart = useRef<{ x: number; y: number } | null>(null)
+  const suppressItemClick = useRef(false)
 
   useEffect(() => { api.get('/auth/me').then((result) => setUser(result.data.data.user)).catch(() => undefined).finally(() => setLoading(false)) }, [])
 
@@ -85,6 +91,17 @@ function App() {
   // The effect synchronizes the current navigation selection with server state.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (user) void loadView() }, [user, loadView])
+
+  useEffect(() => {
+    const shownFolders = [...(searchResults?.folders ?? folders)].sort((left, right) => sortBy === 'name' ? left.name.localeCompare(right.name) : right.updatedAt.localeCompare(left.updatedAt))
+    const shownFiles = [...(searchResults?.files ?? files)].sort((left, right) => sortBy === 'name' ? left.name.localeCompare(right.name) : right.updatedAt.localeCompare(left.updatedAt))
+    const cards = gridRef.current?.querySelectorAll<HTMLElement>('.item-card')
+    cards?.forEach((card, index) => {
+      const key = index < shownFolders.length ? `folder:${shownFolders[index].id}` : `file:${shownFiles[index - shownFolders.length]?.id ?? ''}`
+      card.dataset.selectionKey = key
+      card.classList.toggle('selected', selectedKeys.has(key))
+    })
+  }, [files, folders, searchResults, selectedKeys, sortBy])
 
   async function login(email: string, password: string) {
     const result = await api.post('/auth/login', { email, password })
@@ -220,27 +237,48 @@ function App() {
 
   async function uploadNext(job: UploadJob) {
     setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, status: 'uploading', percent: 0 } : item))
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const init = await api.post('/files/upload/initiate', { name: job.file.name, mimeType: job.file.type || 'application/octet-stream', size: job.file.size, folderId })
-        await api.put(init.data.data.uploadPath, job.file, {
-          headers: { 'Content-Type': job.file.type || 'application/octet-stream' },
-          onUploadProgress: (event) => {
-            if (event.total) {
-              const percent = Math.round((event.loaded / event.total) * 100)
-              setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent } : item))
-            }
-          },
-        })
-        await api.post('/files/upload/finalize', { sessionId: init.data.data.sessionId })
-        setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent: 100, status: 'complete' } : item))
-        return
-      } catch (error) {
-        const code = (error as { response?: { data?: { error?: { code?: string } } } }).response?.data?.error?.code
-        if (attempt === 0 && code === 'UPLOAD_SESSION_NOT_FOUND') continue
-        throw error
+    const init = await api.post('/files/upload/initiate', { name: job.file.name, mimeType: job.file.type || 'application/octet-stream', size: job.file.size, folderId })
+    const sessionId = init.data.data.sessionId as string
+    const chunkPath = init.data.data.chunkPath as string
+    let offset = Number(init.data.data.uploadedBytes)
+    const chunkBytes = 8 * 1024 * 1024
+
+    while (offset < job.file.size) {
+      const start = offset
+      const end = Math.min(start + chunkBytes, job.file.size)
+      let chunkSent = false
+      for (let attempt = 0; attempt < 5 && !chunkSent; attempt += 1) {
+        try {
+          await api.put(chunkPath, job.file.slice(start, end), {
+            headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${start}-${end - 1}/${job.file.size}` },
+            onUploadProgress: (event) => {
+              if (event.total) {
+                const percent = Math.round(((start + Math.min(event.loaded, end - start)) / job.file.size) * 100)
+                setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent } : item))
+              }
+            },
+          })
+          offset = end
+          chunkSent = true
+        } catch (error) {
+          const cause = error as { code?: string; response?: { status?: number; data?: { error?: { code?: string; data?: { uploadedBytes?: number } } } } }
+          const errorCode = cause.response?.data?.error?.code
+          const remoteOffset = cause.response?.data?.error?.data?.uploadedBytes
+          if (errorCode === 'UPLOAD_OFFSET_MISMATCH' && typeof remoteOffset === 'number') {
+            offset = remoteOffset
+            chunkSent = true
+            continue
+          }
+          const retryable = !cause.response || (cause.response.status ?? 0) >= 500
+          if (!retryable || attempt === 4) throw error
+          setMessage('Upload connection interrupted. Resuming from the last saved chunk...')
+          await new Promise((resolve) => window.setTimeout(resolve, 1000 * (2 ** attempt)))
+        }
       }
     }
+
+    await api.post('/files/upload/finalize', { sessionId })
+    setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent: 100, status: 'complete' } : item))
   }
 
   async function retryUpload(job: UploadJob) {
@@ -272,6 +310,64 @@ function App() {
     if (uploadError) setMessage(uploadError)
   }
 
+  function startMarquee(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0 || !(event.target instanceof HTMLElement) || !event.target.classList.contains('content-grid')) return
+    marqueeStart.current = { x: event.clientX, y: event.clientY }
+    event.target.setPointerCapture(event.pointerId)
+    setMarquee({ left: event.clientX, top: event.clientY, width: 0, height: 0 })
+  }
+
+  function moveMarquee(event: ReactPointerEvent<HTMLElement>) {
+    const start = marqueeStart.current
+    if (!start) return
+    setMarquee({ left: Math.min(start.x, event.clientX), top: Math.min(start.y, event.clientY), width: Math.abs(event.clientX - start.x), height: Math.abs(event.clientY - start.y) })
+  }
+
+  function finishMarquee(event: ReactPointerEvent<HTMLElement>) {
+    const start = marqueeStart.current
+    if (!start) return
+    marqueeStart.current = null
+    setMarquee(null)
+    if (Math.abs(event.clientX - start.x) < 5 && Math.abs(event.clientY - start.y) < 5) return
+    suppressItemClick.current = true
+    const rect = { left: Math.min(start.x, event.clientX), right: Math.max(start.x, event.clientX), top: Math.min(start.y, event.clientY), bottom: Math.max(start.y, event.clientY) }
+    const keys = [...(gridRef.current?.querySelectorAll<HTMLElement>('[data-selection-key]') ?? [])]
+      .filter((card) => {
+        const bounds = card.getBoundingClientRect()
+        return bounds.left < rect.right && bounds.right > rect.left && bounds.top < rect.bottom && bounds.bottom > rect.top
+      })
+      .map((card) => card.dataset.selectionKey!)
+    setSelectedKeys(new Set(keys))
+    setSelectedFile(null)
+    setSelectedFolder(null)
+  }
+
+  function downloadFile(file: FileItem) {
+    const link = document.createElement('a')
+    link.href = `${api.defaults.baseURL}/files/${file.id}/content`
+    link.download = file.originalName || file.name
+    document.body.append(link)
+    link.click()
+    link.remove()
+  }
+
+  function handleGridClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (suppressItemClick.current) {
+      suppressItemClick.current = false
+      event.preventDefault()
+      return
+    }
+    const card = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-selection-key]') : null
+    const key = card?.dataset.selectionKey
+    if (!key) return
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey
+    setSelectedKeys((current) => additive ? new Set(current.has(key) ? [...current].filter((itemKey) => itemKey !== key) : [...current, key]) : new Set([key]))
+    if (additive) {
+      setSelectedFile(null)
+      setSelectedFolder(null)
+    }
+  }
+
   async function runSearch(event: FormEvent) {
     event.preventDefault()
     if (search.trim().length < 2) { setSearchResults(null); return }
@@ -279,10 +375,7 @@ function App() {
     setSearchResults(result.data.data)
   }
 
-  async function openFile(file: FileItem) {
-    const result = await api.get(`/files/${file.id}/download`)
-    window.open(result.data.data.url, '_blank', 'noopener,noreferrer')
-  }
+  async function openFile(file: FileItem) { downloadFile(file) }
 
   async function openMoveDialog() {
     try {
@@ -381,10 +474,11 @@ function App() {
   const visibleFiles = [...(searchResults?.files ?? files)].sort((left, right) => sortBy === 'name' ? left.name.localeCompare(right.name) : right.updatedAt.localeCompare(left.updatedAt))
 
   return <BrowserRouter><div className="app-shell">
-    <aside className="sidebar">
+    {mobileMenuOpen && <button className="mobile-menu-backdrop" aria-label="Close navigation menu" onClick={() => setMobileMenuOpen(false)} />}
+    <aside className={`sidebar ${mobileMenuOpen ? 'mobile-menu-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><HardDrive size={18} /></span>AR-DRIVE</div>
       <div className="create-control"><button className="new-button" aria-expanded={createMenuOpen} onClick={() => setCreateMenuOpen(!createMenuOpen)}><Plus size={17} /> New</button>{createMenuOpen && <div className="create-menu" role="menu"><button role="menuitem" onClick={() => { setCreateMenuOpen(false); setFolderDialogOpen(true) }}><FolderPlus size={16} /> New folder</button><button role="menuitem" onClick={() => { setCreateMenuOpen(false); fileInput.current?.click() }}><Upload size={16} /> Upload files</button></div>}</div>
-      <nav className="side-nav" aria-label="Workspace navigation">
+      <nav className="side-nav" aria-label="Workspace navigation" onClick={() => setMobileMenuOpen(false)}>
         <NavItem active={view === 'drive'} icon={<HardDrive size={17} />} label="My Drive" onClick={() => { setView('drive'); setFolderId(null); setSearchResults(null) }} />
         <NavItem active={view === 'shared'} icon={<Users size={17} />} label="Shared with me" onClick={() => { setView('shared'); setSearchResults(null) }} />
         <NavItem active={view === 'sharing'} icon={<Users size={17} />} label="Sharing" onClick={() => { setView('sharing'); setSearchResults(null) }} />
@@ -396,7 +490,8 @@ function App() {
       <div className="storage-card"><span>Storage</span><strong>{formatBytes(user.storageUsed)} used</strong><div className="meter"><i style={{ width: `${Math.min(100, Number(user.storageUsed) / Number(user.storageQuota) * 100)}%` }} /></div><small>of {formatBytes(user.storageQuota)}</small></div>
       <button className="logout-button" onClick={() => void logout()}><LogOut size={16} /> Sign out</button>
     </aside>
-    <main className={`workspace ${dragging ? 'is-dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={handleDrop}>
+    <main ref={gridRef} className={`workspace ${dragging ? 'is-dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={handleDrop} onPointerDown={startMarquee} onPointerMove={moveMarquee} onPointerUp={finishMarquee} onClick={handleGridClick}>
+      <button className="mobile-menu-toggle" type="button" aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-expanded={mobileMenuOpen} onClick={() => setMobileMenuOpen((open) => !open)}><Menu size={19} /></button>
       {dragging && <div className="drop-overlay"><Upload size={28} /><strong>Drop files to upload</strong><span>Files are saved to your local AR-DRIVE storage.</span></div>}
       <header className="workspace-header"><div><p className="eyebrow">Internal workspace</p><h1>{view === 'drive' ? 'My Drive' : view === 'shared' ? 'Shared with me' : view === 'sharing' ? 'Sharing' : view[0].toUpperCase() + view.slice(1)}</h1></div><div className="user-chip"><span>{user.name.slice(0, 1).toUpperCase()}</span>{user.name}</div></header>
       {view === 'drive' && <nav className="breadcrumbs" aria-label="Breadcrumb"><button onClick={() => { setFolderId(null); setSearchResults(null) }}>My Drive</button>{currentFolder && <><ChevronRight size={14} /><span>{currentFolder.name}</span></>}</nav>}
@@ -408,9 +503,12 @@ function App() {
       {view === 'admin' && <section className="admin-panel"><div className="admin-toolbar"><h2>User administration</h2><input value={adminSearch} onChange={(event) => setAdminSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadView() }} placeholder="Search users" /></div><div className="admin-table">{adminUsers.map((adminUser) => <div className="admin-row" key={adminUser.id}><div><strong>{adminUser.name}</strong><small>{adminUser.email}</small></div><span>{adminUser.role}</span><span>{adminUser.isActive ? 'Active' : 'Inactive'}</span>{adminUser.id !== user.id && adminUser.isActive && <button className="secondary-button" onClick={() => void deactivateUser(adminUser)}>Deactivate</button>}</div>)}</div></section>}
       {view === 'sharing' && <section className="admin-panel"><div className="admin-toolbar"><h2>Owned shares</h2></div><div className="admin-table">{ownedShares.map((share) => <div className="admin-row" key={share.id}><div><strong>{share.file?.name ?? share.folder?.name}</strong><small>{share.sharedWithUser.name} · {share.sharedWithUser.email}</small></div><select value={share.permission} onChange={(event) => void updateOwnedShare(share, event.target.value as 'VIEW' | 'EDIT')}><option value="VIEW">Can view</option><option value="EDIT">Can edit</option></select><span>{share.expiresAt ? `Expires ${formatDate(share.expiresAt)}` : 'No expiry'}</span><button className="secondary-button" onClick={() => void revokeOwnedShare(share)}>Revoke</button></div>)}</div></section>}
       {view === 'drive' && folderId && <button className="back-button" onClick={() => setFolderId(null)}>&larr; Back to root</button>}
+      {selectedKeys.size > 0 && <div className="selection-toolbar"><span>{selectedKeys.size} selected</span><button type="button" onClick={() => { setSelectedKeys(new Set()); setSelectedFile(null); setSelectedFolder(null) }}>Clear selection</button></div>}
       <div className={`content-grid ${layout === 'list' ? 'list-layout' : ''}`}>{visibleFolders.map((folder) => <article className="item-card folder-item" key={folder.id} onClick={() => { setSelectedFolder(folder); setSelectedFile(null) }}><button className="folder-open" onDoubleClick={() => { setView('drive'); setFolderId(folder.id); setSearchResults(null) }}><Folder size={27} /><span>{folder.name}</span><small>Folder</small></button><button className="folder-menu-trigger" aria-label={`Actions for ${folder.name}`} aria-expanded={folderMenuId === folder.id} onClick={() => setFolderMenuId(folderMenuId === folder.id ? null : folder.id)}><MoreHorizontal size={18} /></button>{folderMenuId === folder.id && <div className="folder-menu" role="menu">{view === 'trash' ? <><button role="menuitem" onClick={() => void restoreTrashItem(folder.id)}><RotateCcw size={15} /> Restore</button><button role="menuitem" onClick={() => void deleteForever(folder.id, 'folder')}><Trash2 size={15} /> Delete forever</button></> : <button role="menuitem" onClick={() => void deleteFolder(folder)}><Trash2 size={15} /> Move to trash</button>}</div>}</article>)}{visibleFiles.map((file) => <article className="item-card file-item" key={file.id} onClick={() => { setSelectedFile(file); setSelectedFolder(null) }}><button className="file-open" onClick={() => setPreviewFile(file)} onDoubleClick={() => void openFile(file)}>{isImage(file) ? <img className="file-thumb" src={previewUrl(file)} alt="" /> : <File size={27} />}<span>{file.name}</span><small>{formatBytes(file.size)}</small></button><button className="file-menu-trigger" aria-label={`Actions for ${file.name}`} aria-expanded={fileMenuId === file.id} onClick={() => setFileMenuId(fileMenuId === file.id ? null : file.id)}><MoreHorizontal size={18} /></button>{fileMenuId === file.id && <div className="file-menu folder-menu" role="menu">{view === 'trash' ? <><button role="menuitem" onClick={() => void restoreTrashItem(file.id)}><RotateCcw size={15} /> Restore</button><button role="menuitem" onClick={() => void deleteForever(file.id, 'file')}><Trash2 size={15} /> Delete forever</button></> : <><button role="menuitem" onClick={() => openRenameDialog(file)}>Rename</button><button role="menuitem" onClick={() => void deleteFile(file)}><Trash2 size={15} /> Move to trash</button></>}</div>}</article>)}</div>
       {(selectedFile || selectedFolder) && <aside className="details-panel"><button className="details-close" aria-label="Close details" onClick={() => { setSelectedFile(null); setSelectedFolder(null) }}><X size={17} /></button>{selectedFile ? <><File size={30} /><h2>{selectedFile.name}</h2><dl><dt>Type</dt><dd>{selectedFile.mimeType}</dd><dt>Size</dt><dd>{formatBytes(selectedFile.size)}</dd><dt>Modified</dt><dd>{formatDate(selectedFile.updatedAt)}</dd></dl></> : <><Folder size={30} /><h2>{selectedFolder?.name}</h2><dl><dt>Type</dt><dd>Folder</dd><dt>Modified</dt><dd>{formatDate(selectedFolder?.updatedAt ?? '')}</dd></dl></>} {view === 'shared' ? <button className="secondary-button details-move" onClick={() => void removeSharedAccess()}>Remove access</button> : view !== 'trash' && <><button className="secondary-button details-move" onClick={() => void openMoveDialog()}>Move</button><button className="secondary-button details-move" onClick={() => void toggleStarSelected()}><Star size={15} /> {view === 'starred' ? 'Unstar' : 'Star'}</button><button className="secondary-button details-move" onClick={() => setShareDialogOpen(true)}><Users size={15} /> Share</button></>}</aside>}
       {!visibleFolders.length && !visibleFiles.length && <div className="empty-state"><LayoutGrid size={28} /><strong>Nothing here yet</strong><span>Create a folder or upload a file to get started.</span></div>}
+      {selectedFile && view !== 'trash' && <button className="details-download secondary-button" type="button" onClick={() => downloadFile(selectedFile)}><Download size={16} /> Download</button>}
+      {marquee && <div className="selection-rectangle" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
     </main>
     {folderDialogOpen && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title"><button className="dialog-close" aria-label="Close" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button><p className="eyebrow">My Drive</p><h2 id="folder-dialog-title">Create a folder</h2><form onSubmit={(event) => void createFolder(event)}><label htmlFor="new-folder-name">Folder name</label><input id="new-folder-name" autoFocus value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} maxLength={120} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>Cancel</button><button type="submit" className="primary-button">Create folder</button></div></form></section></div>}
     {renameFileId && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-file-title"><button className="dialog-close" aria-label="Close" onClick={() => setRenameFileId(null)}><X size={18} /></button><p className="eyebrow">File actions</p><h2 id="rename-file-title">Rename file</h2><form onSubmit={(event) => void renameFile(event)}><label htmlFor="rename-file-name">File name</label><input id="rename-file-name" autoFocus value={renameFileName} onChange={(event) => setRenameFileName(event.target.value)} maxLength={255} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setRenameFileId(null)} disabled={Boolean(busyAction)}>Cancel</button><button type="submit" className="primary-button" disabled={Boolean(busyAction)}>{busyAction ?? 'Save name'}</button></div></form></section></div>}

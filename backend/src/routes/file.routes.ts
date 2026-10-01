@@ -99,7 +99,7 @@ router.post('/upload/initiate', async (request, response) => {
   }
   const key = storage.createFileKey(request.user!.id)
   const session = await prisma.uploadSession.create({ data: { userId: request.user!.id, folderId: folderAccess?.folder.id ?? null, name, originalName: name, mimeType, size: BigInt(size), storageKey: key, expiresAt: new Date(Date.now() + uploadSessionTtlMs) } })
-  response.status(201).json({ success: true, data: { sessionId: session.id, uploadPath: `/files/upload/${session.id}/content`, expiresAt: session.expiresAt } })
+  response.status(201).json({ success: true, data: { sessionId: session.id, uploadPath: `/files/upload/${session.id}/content`, chunkPath: `/files/upload/${session.id}/chunk`, uploadedBytes: session.uploadedBytes.toString(), expiresAt: session.expiresAt } })
 })
 
 router.put('/upload/:sessionId/content', async (request, response) => {
@@ -111,17 +111,62 @@ router.put('/upload/:sessionId/content', async (request, response) => {
   await prisma.uploadSession.update({ where: { id: session.id }, data: { expiresAt: new Date(Date.now() + uploadSessionTtlMs) } })
   const existingObject = await storage.objectMetadata(session.storageKey)
   if (existingObject?.size === Number(session.size)) {
+    await prisma.uploadSession.update({ where: { id: session.id }, data: { uploadedBytes: session.size } })
     response.status(204).send()
     return
   }
   if (existingObject) await storage.deleteObject(session.storageKey)
   try {
     await storage.writeObject(session.storageKey, request, Number(session.size))
+    await prisma.uploadSession.update({ where: { id: session.id }, data: { uploadedBytes: session.size } })
     response.status(204).send()
   } catch {
     await storage.deleteObject(session.storageKey).catch(() => undefined)
     await prisma.uploadSession.delete({ where: { id: session.id } }).catch(() => undefined)
     response.status(400).json({ success: false, error: { code: 'UPLOAD_FAILED', message: 'The upload did not match the expected file size or could not be saved.' } })
+  }
+})
+
+router.put('/upload/:sessionId/chunk', async (request, response) => {
+  const session = await prisma.uploadSession.findFirst({ where: { id: request.params.sessionId, userId: request.user!.id } })
+  if (!session || session.expiresAt < new Date()) {
+    response.status(404).json({ success: false, error: { code: 'UPLOAD_SESSION_NOT_FOUND', message: 'Upload session expired or not found' } })
+    return
+  }
+
+  const range = request.header('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+)$/)
+  if (!range) {
+    response.status(400).json({ success: false, error: { code: 'INVALID_UPLOAD_RANGE', message: 'A valid Content-Range header is required' } })
+    return
+  }
+  const start = Number(range[1])
+  const end = Number(range[2])
+  const total = Number(range[3])
+  const chunkSize = end - start + 1
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || total !== Number(session.size) || chunkSize <= 0 || end >= total) {
+    response.status(400).json({ success: false, error: { code: 'INVALID_UPLOAD_RANGE', message: 'Upload range does not match the file size' } })
+    return
+  }
+
+  const uploadedBytes = Number(session.uploadedBytes)
+  if (start < uploadedBytes && end < uploadedBytes) {
+    response.status(204).send()
+    return
+  }
+  if (start !== uploadedBytes) {
+    response.status(409).json({ success: false, error: { code: 'UPLOAD_OFFSET_MISMATCH', message: 'Upload chunk is out of sequence', data: { uploadedBytes } } })
+    return
+  }
+
+  await prisma.uploadSession.update({ where: { id: session.id }, data: { expiresAt: new Date(Date.now() + uploadSessionTtlMs) } })
+  try {
+    await storage.writeChunk(session.storageKey, request, chunkSize, start)
+    await prisma.uploadSession.update({ where: { id: session.id }, data: { uploadedBytes: { increment: BigInt(chunkSize) } } })
+    response.status(204).send()
+  } catch {
+    if (!request.aborted && !response.headersSent) {
+      response.status(400).json({ success: false, error: { code: 'UPLOAD_CHUNK_FAILED', message: 'This upload chunk was interrupted. Retry the transfer.' } })
+    }
   }
 })
 
@@ -135,6 +180,15 @@ router.post('/upload/finalize', async (request, response) => {
   if (!session || session.expiresAt < new Date()) {
     response.status(404).json({ success: false, error: { code: 'UPLOAD_SESSION_NOT_FOUND', message: 'Upload session expired or not found' } })
     return
+  }
+  if (session.uploadedBytes !== session.size) {
+    const existingObject = await storage.objectMetadata(session.storageKey)
+    if (existingObject?.size === Number(session.size)) {
+      await prisma.uploadSession.update({ where: { id: session.id }, data: { uploadedBytes: session.size } })
+    } else {
+      response.status(409).json({ success: false, error: { code: 'UPLOAD_INCOMPLETE', message: 'The upload has not received all file data yet', data: { uploadedBytes: session.uploadedBytes.toString(), size: session.size.toString() } } })
+      return
+    }
   }
   const metadata = await storage.objectMetadata(session.storageKey)
   if (!metadata) {

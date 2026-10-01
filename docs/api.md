@@ -27,6 +27,7 @@ Errors use the matching `success: false` envelope. Current endpoints include:
 - `GET /api/files`
 - `GET /api/files/:id/download`
 - `POST /api/files/upload/initiate`
+- `PUT /api/files/upload/:sessionId/chunk` (raw chunk body with a `Content-Range` header)
 - `POST /api/files/upload/finalize`
 - `PATCH /api/files/:id`
 - `DELETE /api/files/:id` (soft delete)

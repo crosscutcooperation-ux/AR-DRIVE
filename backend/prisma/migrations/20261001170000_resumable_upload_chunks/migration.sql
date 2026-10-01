@@ -1,0 +1,1 @@
+ALTER TABLE "UploadSession" ADD COLUMN "uploadedBytes" BIGINT NOT NULL DEFAULT 0;

@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, stat, unlink } from 'node:fs/promises'
+import { mkdir, stat, truncate, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -30,6 +30,30 @@ export const storage = {
       if (size !== expectedSize) throw new Error('Uploaded file size does not match')
     } catch (error) {
       await unlink(path).catch(() => undefined)
+      throw error
+    }
+  },
+
+  async writeChunk(key: string, stream: Readable, expectedSize: number, offset: number) {
+    const path = resolveStoragePath(key)
+    await mkdir(dirname(path), { recursive: true })
+    const existing = await stat(path).catch((error: unknown) => isMissingFile(error) ? null : Promise.reject(error))
+    if ((existing?.size ?? 0) !== offset) throw new Error('Upload chunk offset does not match stored data')
+
+    let size = 0
+    const sizeGuard = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        size += chunk.length
+        if (size > expectedSize) callback(new Error('Uploaded chunk is larger than expected'))
+        else callback(null, chunk)
+      },
+    })
+    try {
+      await pipeline(stream, sizeGuard, createWriteStream(path, offset === 0 ? { flags: 'w' } : { flags: 'r+', start: offset }))
+      if (size !== expectedSize) throw new Error('Uploaded chunk size does not match')
+    } catch (error) {
+      if (offset === 0) await unlink(path).catch(() => undefined)
+      else await truncate(path, offset).catch(() => undefined)
       throw error
     }
   },
