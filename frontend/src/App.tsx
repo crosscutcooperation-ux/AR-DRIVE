@@ -7,7 +7,7 @@ import './drop.css'
 import './menus.css'
 
 type View = 'drive' | 'recent' | 'starred' | 'shared' | 'sharing' | 'trash' | 'admin'
-type UploadJob = { name: string; percent: number; status: 'queued' | 'uploading' | 'complete' | 'failed' }
+type UploadJob = { id: string; name: string; file: File; percent: number; status: 'queued' | 'uploading' | 'complete' | 'failed' }
 
 function App() {
   const [user, setUser] = useState<User | null>(null)
@@ -218,19 +218,43 @@ function App() {
     }
   }
 
+  async function uploadNext(job: UploadJob) {
+    setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, status: 'uploading', percent: 0 } : item))
+    const init = await api.post('/files/upload/initiate', { name: job.file.name, mimeType: job.file.type || 'application/octet-stream', size: job.file.size, folderId })
+    await api.put(init.data.data.uploadPath, job.file, {
+      headers: { 'Content-Type': job.file.type || 'application/octet-stream' },
+      onUploadProgress: (event) => {
+        if (event.total) {
+          const percent = Math.round((event.loaded / event.total) * 100)
+          setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent } : item))
+        }
+      },
+    })
+    await api.post('/files/upload/finalize', { sessionId: init.data.data.sessionId })
+    setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent: 100, status: 'complete' } : item))
+  }
+
+  async function retryUpload(job: UploadJob) {
+    try {
+      await uploadNext(job)
+    } catch (error) {
+      setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, status: 'failed' } : item))
+      setMessage(apiErrorMessage(error, `Upload of ${job.file.name} failed. Check the local storage directory and network.`))
+    }
+  }
+
   async function uploadFiles(selected: FileList | null) {
     if (!selected) return
-    const jobs = Array.from(selected).map((file) => ({ name: file.name, percent: 0, status: 'queued' as const }))
+    const jobs = Array.from(selected).map((file) => ({ id: `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 9)}`, name: file.name, file, percent: 0, status: 'queued' as const }))
     setUploadQueue(jobs)
     let uploadError = ''
-    for (const [index, file] of Array.from(selected).entries()) {
+    for (const job of jobs) {
       try {
-        setUploadQueue((current) => current.map((job, jobIndex) => jobIndex === index ? { ...job, status: 'uploading' } : job))
-        const init = await api.post('/files/upload/initiate', { name: file.name, mimeType: file.type || 'application/octet-stream', size: file.size, folderId })
-        await api.put(init.data.data.uploadPath, file, { headers: { 'Content-Type': file.type || 'application/octet-stream' }, onUploadProgress: (event) => { if (event.total) { const percent = Math.round(event.loaded / event.total * 100); setUploadQueue((current) => current.map((job, jobIndex) => jobIndex === index ? { ...job, percent } : job)) } } })
-        await api.post('/files/upload/finalize', { sessionId: init.data.data.sessionId })
-        setUploadQueue((current) => current.map((job, jobIndex) => jobIndex === index ? { ...job, percent: 100, status: 'complete' } : job))
-      } catch (error) { uploadError = apiErrorMessage(error, `Upload of ${file.name} failed. Check the local storage directory and network.`); setUploadQueue((current) => current.map((job, jobIndex) => jobIndex === index ? { ...job, status: 'failed' } : job)) }
+        await uploadNext(job)
+      } catch (error) {
+        uploadError = apiErrorMessage(error, `Upload of ${job.file.name} failed. Check the local storage directory and network.`)
+        setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, status: 'failed' } : item))
+      }
     }
     if (fileInput.current) fileInput.current.value = ''
     await loadView()
@@ -368,7 +392,7 @@ function App() {
       <div className="toolbar"><form className="search-box" onSubmit={(event) => void runSearch(event)}><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search your workspace" /><button type="button" onClick={() => { setSearch(''); setSearchResults(null) }} aria-label="Clear search"><X size={15} /></button></form><button className="upload-button" onClick={() => fileInput.current?.click()}><Upload size={16} /> Upload</button><input ref={fileInput} hidden type="file" multiple onChange={(event) => void uploadFiles(event.target.files)} /></div>
       <div className="view-controls"><label>Sort <select value={sortBy} onChange={(event) => setSortBy(event.target.value as 'name' | 'updatedAt')}><option value="name">Name</option><option value="updatedAt">Recently updated</option></select></label><div className="layout-toggle" role="group" aria-label="View layout"><button className={layout === 'grid' ? 'active' : ''} onClick={() => setLayout('grid')} aria-label="Grid view"><LayoutGrid size={16} /></button><button className={layout === 'list' ? 'active' : ''} onClick={() => setLayout('list')} aria-label="List view"><Archive size={16} /></button></div></div>
       {message && <div className="notice">{message}</div>}
-      {(uploadQueue.length > 0 || busyAction) && <div className="operation-progress" role="status">{busyAction && <div className="operation-progress-header"><span>{busyAction}</span><strong>Working...</strong></div>}{uploadQueue.map((job) => <div className="upload-job" key={job.name}><div className="operation-progress-header"><span>{job.name}</span><strong>{job.status === 'queued' ? 'Queued' : job.status === 'complete' ? 'Complete' : job.status === 'failed' ? 'Failed' : `${job.percent}%`}</strong></div><div className="operation-progress-track"><i style={{ width: `${job.percent}%` }} /></div></div>)}</div>}
+      {(uploadQueue.length > 0 || busyAction) && <div className="operation-progress" role="status">{busyAction && <div className="operation-progress-header"><span>{busyAction}</span><strong>Working...</strong></div>}{uploadQueue.map((job) => <div className="upload-job" key={job.id}><div className="operation-progress-header"><span>{job.name}</span><div className="upload-status-row"><strong>{job.status === 'queued' ? 'Queued' : job.status === 'complete' ? 'Complete' : job.status === 'failed' ? 'Failed' : `${job.percent}%`}</strong>{job.status === 'failed' && <button className="secondary-button retry-button" type="button" onClick={() => void retryUpload(job)}>Retry</button>}</div></div><div className="operation-progress-track"><i style={{ width: `${job.percent}%` }} /></div></div>)}</div>}
       {searchResults && <div className="search-label">Search results <button onClick={() => setSearchResults(null)}>Clear</button></div>}
       {view === 'admin' && <section className="admin-panel"><div className="admin-toolbar"><h2>User administration</h2><input value={adminSearch} onChange={(event) => setAdminSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadView() }} placeholder="Search users" /></div><div className="admin-table">{adminUsers.map((adminUser) => <div className="admin-row" key={adminUser.id}><div><strong>{adminUser.name}</strong><small>{adminUser.email}</small></div><span>{adminUser.role}</span><span>{adminUser.isActive ? 'Active' : 'Inactive'}</span>{adminUser.id !== user.id && adminUser.isActive && <button className="secondary-button" onClick={() => void deactivateUser(adminUser)}>Deactivate</button>}</div>)}</div></section>}
       {view === 'sharing' && <section className="admin-panel"><div className="admin-toolbar"><h2>Owned shares</h2></div><div className="admin-table">{ownedShares.map((share) => <div className="admin-row" key={share.id}><div><strong>{share.file?.name ?? share.folder?.name}</strong><small>{share.sharedWithUser.name} · {share.sharedWithUser.email}</small></div><select value={share.permission} onChange={(event) => void updateOwnedShare(share, event.target.value as 'VIEW' | 'EDIT')}><option value="VIEW">Can view</option><option value="EDIT">Can edit</option></select><span>{share.expiresAt ? `Expires ${formatDate(share.expiresAt)}` : 'No expiry'}</span><button className="secondary-button" onClick={() => void revokeOwnedShare(share)}>Revoke</button></div>)}</div></section>}
