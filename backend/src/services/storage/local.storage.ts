@@ -1,16 +1,17 @@
 import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, stat, unlink } from 'node:fs/promises'
-import { dirname, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { env } from '../../config/env.js'
 
-const storageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../uploads')
+const storageRoot = resolve(process.cwd(), env.STORAGE_ROOT)
 
 export const storage = {
-  createFileKey() {
-    return randomUUID()
+  createFileKey(userId: string) {
+    const safeUserId = userId.replace(/[^a-zA-Z0-9_-]+/g, '_') || 'user'
+    return `${safeUserId}/${randomUUID()}`
   },
 
   async writeObject(key: string, stream: Readable, expectedSize: number) {
@@ -57,9 +58,16 @@ export const storage = {
 }
 
 function resolveStoragePath(key: string) {
-  const path = resolve(storageRoot, key)
-  if (!path.startsWith(`${storageRoot}${sep}`)) throw new Error('Invalid storage key')
-  return path
+  const normalizedKey = key.replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!normalizedKey || normalizedKey.includes('..') || normalizedKey.startsWith('../') || normalizedKey.startsWith('/')) {
+    throw new Error('Invalid storage key')
+  }
+  const targetPath = resolve(storageRoot, normalizedKey)
+  const relativePath = relative(storageRoot, targetPath)
+  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    throw new Error('Invalid storage key')
+  }
+  return targetPath
 }
 
 function isMissingFile(error: unknown): error is NodeJS.ErrnoException {

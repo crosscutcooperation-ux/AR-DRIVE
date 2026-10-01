@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { prisma } from '../config/prisma.js'
 import { requireActiveUser, requireAuth } from '../middleware/auth.middleware.js'
 import { storage } from '../services/storage/local.storage.js'
+import { resolveFileAccess, resolveFolderAccess } from '../services/sharing.service.js'
 
 const router = Router()
 const nameSchema = z.string().trim().transform(normaliseName).pipe(z.string().min(1).max(255))
@@ -17,7 +18,12 @@ router.get('/', async (request, response) => {
   const page = parsePositiveInt(request.query.page, 1)
   const limit = Math.min(parsePositiveInt(request.query.limit, 50), 100)
   const folderId = typeof request.query.folderId === 'string' ? request.query.folderId : null
-  const where = { ownerId: request.user!.id, folderId, deletedAt: null }
+  const folderAccess = folderId ? await resolveFolderAccess(request.user!.id, folderId) : null
+  if (folderId && !folderAccess) {
+    response.status(404).json({ success: false, error: { code: 'FOLDER_NOT_FOUND', message: 'Folder not found' } })
+    return
+  }
+  const where = { ownerId: folderAccess?.ownerId ?? request.user!.id, folderId, deletedAt: null }
   const [files, total] = await Promise.all([
     prisma.file.findMany({ where, orderBy: { updatedAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
     prisma.file.count({ where }),
@@ -26,41 +32,42 @@ router.get('/', async (request, response) => {
 })
 
 router.get('/:id', async (request, response) => {
-  const file = await ownedFile(request.params.id, request.user!.id)
-  if (!file) {
+  const access = await resolveFileAccess(request.user!.id, request.params.id)
+  if (!access) {
     response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
     return
   }
-  response.json({ success: true, data: { file: toFileResponse(file) } })
+  response.json({ success: true, data: { file: toFileResponse(access.file) } })
 })
 
 router.get('/:id/download', async (request, response) => {
-  const file = await ownedFile(request.params.id, request.user!.id)
-  if (!file) {
+  const access = await resolveFileAccess(request.user!.id, request.params.id)
+  if (!access) {
     response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
     return
   }
+  const file = access.file
   const url = `${request.protocol}://${request.get('host')}${request.baseUrl}/${file.id}/content`
   await prisma.activity.create({ data: { userId: request.user!.id, action: 'FILE_DOWNLOAD', entityType: 'FILE', entityId: file.id } })
   response.json({ success: true, data: { url } })
 })
 
 router.get('/:id/content', async (request, response) => {
-  const file = await ownedFile(request.params.id, request.user!.id)
-  if (!file) {
+  const access = await resolveFileAccess(request.user!.id, request.params.id)
+  if (!access) {
     response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
     return
   }
-  await streamFile(file, response, true)
+  await streamFile(access.file, response, true)
 })
 
 router.get('/:id/preview', async (request, response) => {
-  const file = await ownedFile(request.params.id, request.user!.id)
-  if (!file) {
+  const access = await resolveFileAccess(request.user!.id, request.params.id)
+  if (!access) {
     response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
     return
   }
-  await streamFile(file, response, false)
+  await streamFile(access.file, response, false)
 })
 
 router.post('/upload/initiate', async (request, response) => {
@@ -74,18 +81,23 @@ router.post('/upload/initiate', async (request, response) => {
     response.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'This file exceeds the upload limit' } })
     return
   }
-  const folder = folderId ? await prisma.folder.findFirst({ where: { id: folderId, ownerId: request.user!.id, deletedAt: null } }) : null
-  if (folderId && !folder) {
+  const folderAccess = folderId ? await resolveFolderAccess(request.user!.id, folderId) : null
+  if (folderId && !folderAccess) {
     response.status(404).json({ success: false, error: { code: 'FOLDER_NOT_FOUND', message: 'Destination folder not found' } })
     return
   }
-  const user = await prisma.user.findUniqueOrThrow({ where: { id: request.user!.id }, select: { storageQuota: true, storageUsed: true } })
+  if (folderAccess?.permission === 'VIEW') {
+    response.status(403).json({ success: false, error: { code: 'SHARE_READ_ONLY', message: 'This shared folder is read-only' } })
+    return
+  }
+  const ownerId = folderAccess?.ownerId ?? request.user!.id
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: ownerId }, select: { storageQuota: true, storageUsed: true } })
   if (user.storageUsed + BigInt(size) > user.storageQuota) {
     response.status(413).json({ success: false, error: { code: 'STORAGE_QUOTA_EXCEEDED', message: 'Storage quota exceeded' } })
     return
   }
-  const key = storage.createFileKey()
-  const session = await prisma.uploadSession.create({ data: { userId: request.user!.id, folderId: folder?.id, name, originalName: name, mimeType, size: BigInt(size), storageKey: key, expiresAt: new Date(Date.now() + 15 * 60 * 1000) } })
+  const key = storage.createFileKey(request.user!.id)
+  const session = await prisma.uploadSession.create({ data: { userId: request.user!.id, folderId: folderAccess?.folder.id ?? null, name, originalName: name, mimeType, size: BigInt(size), storageKey: key, expiresAt: new Date(Date.now() + 15 * 60 * 1000) } })
   response.status(201).json({ success: true, data: { sessionId: session.id, uploadPath: `/files/upload/${session.id}/content`, expiresAt: session.expiresAt } })
 })
 
@@ -95,6 +107,12 @@ router.put('/upload/:sessionId/content', async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'UPLOAD_SESSION_NOT_FOUND', message: 'Upload session expired or not found' } })
     return
   }
+  const existingObject = await storage.objectMetadata(session.storageKey)
+  if (existingObject?.size === Number(session.size)) {
+    response.status(204).send()
+    return
+  }
+  if (existingObject) await storage.deleteObject(session.storageKey)
   try {
     await storage.writeObject(session.storageKey, request, Number(session.size))
     response.status(204).send()
@@ -125,13 +143,33 @@ router.post('/upload/finalize', async (request, response) => {
     response.status(409).json({ success: false, error: { code: 'UPLOAD_SIZE_MISMATCH', message: 'Uploaded object size does not match the upload session' } })
     return
   }
+  const folderAccess = session.folderId ? await resolveFolderAccess(session.userId, session.folderId) : null
+  if (session.folderId && !folderAccess) {
+    response.status(404).json({ success: false, error: { code: 'FOLDER_NOT_FOUND', message: 'Upload destination is no longer available' } })
+    return
+  }
+  if (folderAccess?.permission === 'VIEW') {
+    response.status(403).json({ success: false, error: { code: 'SHARE_READ_ONLY', message: 'Upload permission for this folder has been revoked' } })
+    return
+  }
+  const ownerId = folderAccess?.ownerId ?? session.userId
   const file = await prisma.$transaction(async (transaction) => {
-    const created = await transaction.file.create({ data: { name: session.name, originalName: session.originalName, mimeType: session.mimeType, size: session.size, storageKey: session.storageKey, ownerId: session.userId, folderId: session.folderId } })
-    await transaction.user.update({ where: { id: session.userId }, data: { storageUsed: { increment: session.size } } })
+    const user = await transaction.user.findUniqueOrThrow({ where: { id: ownerId }, select: { storageQuota: true } })
+    const quota = await transaction.user.updateMany({
+      where: { id: ownerId, storageQuota: { gte: session.size }, storageUsed: { lte: user.storageQuota - session.size } },
+      data: { storageUsed: { increment: session.size } },
+    })
+    if (quota.count !== 1) return null
+
+    const created = await transaction.file.create({ data: { name: session.name, originalName: session.originalName, mimeType: session.mimeType, size: session.size, storageKey: session.storageKey, ownerId, folderId: session.folderId } })
     await transaction.activity.create({ data: { userId: session.userId, action: 'FILE_UPLOAD', entityType: 'FILE', entityId: created.id } })
     await transaction.uploadSession.delete({ where: { id: session.id } })
     return created
   })
+  if (!file) {
+    response.status(413).json({ success: false, error: { code: 'STORAGE_QUOTA_EXCEEDED', message: 'Storage quota exceeded' } })
+    return
+  }
   response.status(201).json({ success: true, data: { file: toFileResponse(file) } })
 })
 
@@ -141,17 +179,29 @@ router.patch('/:id', async (request, response) => {
     response.status(422).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'File update is invalid' } })
     return
   }
-  const file = await ownedFile(request.params.id, request.user!.id)
-  if (!file) {
+  const access = await resolveFileAccess(request.user!.id, request.params.id)
+  if (!access) {
     response.status(404).json({ success: false, error: { code: 'FILE_NOT_FOUND', message: 'File not found' } })
     return
   }
+  if (access.permission === 'VIEW') {
+    response.status(403).json({ success: false, error: { code: 'SHARE_READ_ONLY', message: 'This shared file is read-only' } })
+    return
+  }
+  const file = access.file
   if (parsed.data.folderId !== undefined && parsed.data.folderId !== null) {
-    const folder = await prisma.folder.findFirst({ where: { id: parsed.data.folderId, ownerId: request.user!.id, deletedAt: null } })
-    if (!folder) {
+    const folder = await resolveFolderAccess(request.user!.id, parsed.data.folderId)
+    if (!folder || folder.ownerId !== access.ownerId) {
       response.status(404).json({ success: false, error: { code: 'FOLDER_NOT_FOUND', message: 'Destination folder not found' } })
       return
     }
+    if (folder.permission === 'VIEW') {
+      response.status(403).json({ success: false, error: { code: 'SHARE_READ_ONLY', message: 'The destination folder is read-only' } })
+      return
+    }
+  } else if (parsed.data.folderId === null && access.permission !== 'OWNER') {
+    response.status(403).json({ success: false, error: { code: 'SHARE_OWNER_REQUIRED', message: 'Only the owner can move a shared file to My Drive' } })
+    return
   }
   const updated = await prisma.file.update({ where: { id: file.id }, data: parsed.data })
   response.json({ success: true, data: { file: toFileResponse(updated) } })
@@ -180,8 +230,9 @@ function toFileResponse(file: { id: string; name: string; originalName: string; 
 }
 
 async function streamFile(file: { storageKey: string; mimeType: string; originalName: string; size: bigint }, response: Response, download: boolean) {
-  response.type(file.mimeType)
-  if (download) response.attachment(file.originalName)
+  const previewable = isPreviewableMime(file.mimeType)
+  response.type(download || !previewable ? 'application/octet-stream' : file.mimeType)
+  if (download || !previewable) response.attachment(file.originalName)
   else response.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.originalName)}"`)
   response.setHeader('Content-Length', file.size.toString())
   try {
@@ -190,6 +241,10 @@ async function streamFile(file: { storageKey: string; mimeType: string; original
     if (!response.headersSent) response.status(404).json({ success: false, error: { code: 'FILE_CONTENT_NOT_FOUND', message: 'File content is unavailable' } })
     else response.destroy()
   }
+}
+
+function isPreviewableMime(mimeType: string) {
+  return mimeType === 'application/pdf' || mimeType.startsWith('image/') || mimeType.startsWith('audio/') || mimeType.startsWith('video/')
 }
 
 function normaliseName(value: string) {

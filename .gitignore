@@ -14,3 +14,4 @@ coverage/
 *.sqlite
 *.sqlite3
 *.db
+Robs.pem

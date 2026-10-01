@@ -30,3 +30,24 @@ app.use('/api', workspaceRoutes)
 app.use((_request, response) => {
   response.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Route not found' } })
 })
+
+app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
+  if (response.headersSent) {
+    next(error)
+    return
+  }
+  console.error(error)
+
+  const parserError = typeof error === 'object' && error !== null && 'type' in error && typeof error.type === 'string'
+    ? error.type
+    : ''
+  if (parserError === 'entity.parse.failed') {
+    response.status(400).json({ success: false, error: { code: 'INVALID_JSON', message: 'The request body is not valid JSON' } })
+    return
+  }
+  if (parserError === 'entity.too.large') {
+    response.status(413).json({ success: false, error: { code: 'REQUEST_TOO_LARGE', message: 'The request body is too large' } })
+    return
+  }
+  response.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: 'Something went wrong' } })
+})

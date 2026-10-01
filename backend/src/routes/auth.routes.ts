@@ -85,7 +85,7 @@ router.get('/me', requireAuth, requireActiveUser, async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } })
     return
   }
-  const usage = await prisma.file.aggregate({ where: { ownerId: user.id }, _sum: { size: true } })
+  const usage = await prisma.file.aggregate({ where: { ownerId: user.id, deletedAt: null }, _sum: { size: true } })
   response.json({ success: true, data: { user: toPublicUser(user, usage._sum.size ?? 0n) } })
 })
 

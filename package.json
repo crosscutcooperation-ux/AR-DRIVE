@@ -1,6 +1,10 @@
 {
   "name": "ar-drive",
   "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
   "version": "0.1.0",
   "scripts": {
     "dev:frontend": "npm --prefix frontend run dev",
@@ -9,8 +13,9 @@
     "build:backend": "npm --prefix backend run build",
     "lint:frontend": "npm --prefix frontend run lint",
     "lint:backend": "npm --prefix backend run lint",
-    "typecheck:frontend": "npm --prefix frontend exec tsc --noEmit",
-    "typecheck:backend": "npm --prefix backend exec tsc --noEmit"
+    "test:backend": "npm --prefix backend run test",
+    "typecheck:frontend": "npm --prefix frontend run typecheck",
+    "typecheck:backend": "npm --prefix backend run typecheck"
   },
   "allowScripts": {
     "@prisma/client@6.19.3": true,

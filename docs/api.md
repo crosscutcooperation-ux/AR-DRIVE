@@ -39,6 +39,9 @@ Errors use the matching `success: false` envelope. Current endpoints include:
 - `POST /api/trash/:id/restore`
 - `DELETE /api/trash/:id` (permanent delete)
 - `GET /api/shares`
+- `GET /api/shares/owned` (shares owned by the authenticated user)
 - `POST /api/shares`
 - `PATCH /api/shares/:id`
 - `DELETE /api/shares/:id`
+
+Share creation accepts either `sharedWithUserId` or `sharedWithEmail`, plus `permission` (`VIEW` or `EDIT`) and an optional future `expiresAt`.

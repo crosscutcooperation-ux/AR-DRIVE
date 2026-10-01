@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../config/prisma.js'
 import { requireActiveUser, requireAuth } from '../middleware/auth.middleware.js'
 import { storage } from '../services/storage/local.storage.js'
+import { resolveFileAccess, resolveFolderAccess } from '../services/sharing.service.js'
 
 const router = Router()
 const permissionSchema = z.enum(['VIEW', 'EDIT'])
@@ -15,27 +16,37 @@ router.get('/search', async (request, response) => {
     response.json({ success: true, data: { files: [], folders: [] } })
     return
   }
-  const [files, folders] = await Promise.all([
-    prisma.file.findMany({ where: { ownerId: request.user!.id, deletedAt: null, name: { contains: query } }, take: 50, orderBy: { updatedAt: 'desc' } }),
-    prisma.folder.findMany({ where: { ownerId: request.user!.id, deletedAt: null, name: { contains: query } }, take: 50, orderBy: { updatedAt: 'desc' } }),
+  const [fileCandidates, folderCandidates] = await Promise.all([
+    prisma.file.findMany({ where: { name: { contains: query }, deletedAt: null }, take: 200, orderBy: { updatedAt: 'desc' } }),
+    prisma.folder.findMany({ where: { name: { contains: query }, deletedAt: null }, take: 200, orderBy: { updatedAt: 'desc' } }),
   ])
-  response.json({ success: true, data: { files: files.map((file) => ({ ...file, size: file.size.toString(), type: 'file' })), folders: folders.map((folder) => ({ ...folder, type: 'folder' })) } })
+  const [files, folders] = await Promise.all([
+    Promise.all(fileCandidates.map(async (file) => (await resolveFileAccess(request.user!.id, file.id))?.file ?? null)),
+    Promise.all(folderCandidates.map(async (folder) => (await resolveFolderAccess(request.user!.id, folder.id))?.folder ?? null)),
+  ])
+  response.json({ success: true, data: { files: files.filter((file): file is NonNullable<typeof file> => file !== null).map((file) => ({ ...file, size: file.size.toString(), type: 'file' })), folders: folders.filter((folder): folder is NonNullable<typeof folder> => folder !== null).map((folder) => ({ ...folder, type: 'folder' })) } })
 })
 
 router.get('/recent', async (request, response) => {
   const activities = await prisma.activity.findMany({ where: { userId: request.user!.id, entityType: 'FILE' }, orderBy: { createdAt: 'desc' }, take: 50 })
-  const files = await prisma.file.findMany({ where: { id: { in: activities.map((activity) => activity.entityId) }, ownerId: request.user!.id, deletedAt: null } })
+  const latestActivity = new Map<string, Date>()
+  for (const activity of activities) {
+    if (!latestActivity.has(activity.entityId)) latestActivity.set(activity.entityId, activity.createdAt)
+  }
+  const files = await prisma.file.findMany({ where: { id: { in: [...latestActivity.keys()] }, ownerId: request.user!.id, deletedAt: null } })
   const byId = new Map(files.map((file) => [file.id, file]))
-  const recent = activities.flatMap((activity) => {
-    const file = byId.get(activity.entityId)
-    return file ? [{ ...file, size: file.size.toString(), lastActivity: activity.createdAt }] : []
+  const recent = [...latestActivity].flatMap(([fileId, lastActivity]) => {
+    const file = byId.get(fileId)
+    return file ? [{ ...file, size: file.size.toString(), lastActivity }] : []
   })
   response.json({ success: true, data: { files: recent } })
 })
 
 router.get('/starred', async (request, response) => {
   const items = await prisma.starredItem.findMany({ where: { userId: request.user!.id }, include: { file: true, folder: true }, orderBy: { createdAt: 'desc' } })
-  response.json({ success: true, data: { items: items.map((item) => ({ ...item, file: item.file ? { ...item.file, size: item.file.size.toString() } : null })) } })
+  const files = items.filter((item) => item.file).map((item) => ({ ...item.file!, size: item.file!.size.toString() }))
+  const folders = items.filter((item) => item.folder).map((item) => item.folder!)
+  response.json({ success: true, data: { files, folders } })
 })
 
 router.post('/starred/:id', async (request, response) => {
@@ -72,7 +83,8 @@ router.get('/trash', async (request, response) => {
 router.post('/trash/:id/restore', async (request, response) => {
   const file = await prisma.file.findFirst({ where: { id: request.params.id, ownerId: request.user!.id, deletedAt: { not: null } } })
   if (file) {
-    await prisma.file.update({ where: { id: file.id }, data: { deletedAt: null } })
+    const parentValid = !file.folderId || await prisma.folder.findFirst({ where: { id: file.folderId, ownerId: request.user!.id, deletedAt: null }, select: { id: true } })
+    await prisma.file.update({ where: { id: file.id }, data: { deletedAt: null, folderId: parentValid ? file.folderId : null } })
     await prisma.activity.create({ data: { userId: request.user!.id, action: 'FILE_RESTORE', entityType: 'FILE', entityId: file.id } })
     response.json({ success: true, data: { restored: { type: 'file', id: file.id } } })
     return
@@ -82,9 +94,16 @@ router.post('/trash/:id/restore', async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'TRASH_ITEM_NOT_FOUND', message: 'Trash item not found' } })
     return
   }
+
+  const folderIds = await collectDeletedFolderIds(folder.id, request.user!.id)
   const parentValid = !folder.parentId || await prisma.folder.findFirst({ where: { id: folder.parentId, ownerId: request.user!.id, deletedAt: null } })
-  const restored = await prisma.folder.update({ where: { id: folder.id }, data: { deletedAt: null, parentId: parentValid ? folder.parentId : null } })
-  response.json({ success: true, data: { restored: { type: 'folder', id: restored.id } } })
+  await prisma.$transaction([
+    prisma.folder.updateMany({ where: { id: { in: folderIds } }, data: { deletedAt: null } }),
+    prisma.folder.update({ where: { id: folder.id }, data: { parentId: parentValid ? folder.parentId : null } }),
+    prisma.file.updateMany({ where: { ownerId: request.user!.id, folderId: { in: folderIds }, deletedAt: { not: null } }, data: { deletedAt: null } }),
+  ])
+
+  response.json({ success: true, data: { restored: { type: 'folder', id: folder.id } } })
 })
 
 router.delete('/trash/:id', async (request, response) => {
@@ -103,33 +122,91 @@ router.delete('/trash/:id', async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'TRASH_ITEM_NOT_FOUND', message: 'Trash item not found' } })
     return
   }
-  const [childCount, fileCount] = await Promise.all([
-    prisma.folder.count({ where: { parentId: folder.id, deletedAt: null } }),
-    prisma.file.count({ where: { folderId: folder.id, deletedAt: null } }),
+
+  const folderIds = await collectDeletedFolderIds(folder.id, request.user!.id)
+  const files = await prisma.file.findMany({ where: { ownerId: request.user!.id, folderId: { in: folderIds }, deletedAt: { not: null } } })
+
+  await Promise.all(files.map((file) => storage.deleteObject(file.storageKey)))
+  await prisma.$transaction([
+    prisma.file.deleteMany({ where: { id: { in: files.map((file) => file.id) } } }),
+    prisma.folder.deleteMany({ where: { id: { in: folderIds } } }),
+    prisma.user.update({ where: { id: request.user!.id }, data: { storageUsed: { decrement: files.reduce((sum, file) => sum + file.size, 0n) } } }),
   ])
-  if (childCount || fileCount) {
-    response.status(409).json({ success: false, error: { code: 'FOLDER_NOT_EMPTY', message: 'Folder contents must be permanently deleted first' } })
-    return
-  }
-  await prisma.folder.delete({ where: { id: folder.id } })
+
   response.status(204).send()
 })
 
 router.get('/shares', async (request, response) => {
-  const shares = await prisma.share.findMany({ where: { sharedWithUserId: request.user!.id }, include: { file: true, folder: true, owner: { select: { id: true, name: true, email: true } } }, orderBy: { createdAt: 'desc' } })
+  const shares = await prisma.share.findMany({
+    where: {
+      sharedWithUserId: request.user!.id,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    include: { file: true, folder: true, owner: { select: { id: true, name: true, email: true } } },
+    orderBy: { createdAt: 'desc' },
+  })
+
+  const files = shares
+    .filter((share) => share.file && !share.file.deletedAt)
+    .map((share) => ({
+      ...share.file!,
+      size: share.file!.size.toString(),
+      shareId: share.id,
+      permission: share.permission,
+      sharedBy: share.owner,
+    }))
+
+  const folders = shares
+    .filter((share) => share.folder && !share.folder.deletedAt)
+    .map((share) => ({
+      ...share.folder!,
+      shareId: share.id,
+      permission: share.permission,
+      sharedBy: share.owner,
+    }))
+
+  response.json({ success: true, data: { files, folders } })
+})
+
+router.get('/shares/owned', async (request, response) => {
+  const shares = await prisma.share.findMany({
+    where: { ownerId: request.user!.id },
+    include: {
+      file: { select: { id: true, name: true } },
+      folder: { select: { id: true, name: true } },
+      sharedWithUser: { select: { id: true, name: true, email: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  })
   response.json({ success: true, data: { shares } })
 })
 
 router.post('/shares', async (request, response) => {
-  const parsed = z.object({ fileId: z.string().cuid().optional(), folderId: z.string().cuid().optional(), sharedWithUserId: z.string().cuid(), permission: permissionSchema, expiresAt: z.coerce.date().optional() }).strict().safeParse(request.body)
-  if (!parsed.success || Boolean(parsed.data?.fileId) === Boolean(parsed.data?.folderId)) {
-    response.status(422).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Share must target exactly one file or folder' } })
+  const parsed = z.object({ fileId: z.string().cuid().optional(), folderId: z.string().cuid().optional(), sharedWithUserId: z.string().cuid().optional(), sharedWithEmail: z.string().trim().email().transform((value) => value.toLowerCase()).optional(), permission: permissionSchema, expiresAt: z.coerce.date().optional() }).strict().safeParse(request.body)
+  if (!parsed.success || Boolean(parsed.data?.fileId) === Boolean(parsed.data?.folderId) || Boolean(parsed.data?.sharedWithUserId) === Boolean(parsed.data?.sharedWithEmail)) {
+    response.status(422).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Share target and recipient are required' } })
+    return
+  }
+  if (parsed.data.expiresAt && parsed.data.expiresAt <= new Date()) {
+    response.status(422).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Share expiry must be in the future' } })
     return
   }
   const target = parsed.data.fileId ? await prisma.file.findFirst({ where: { id: parsed.data.fileId, ownerId: request.user!.id, deletedAt: null } }) : await prisma.folder.findFirst({ where: { id: parsed.data.folderId, ownerId: request.user!.id, deletedAt: null } })
-  const recipient = await prisma.user.findFirst({ where: { id: parsed.data.sharedWithUserId, isActive: true } })
+  const recipient = await prisma.user.findFirst({ where: { ...(parsed.data.sharedWithUserId ? { id: parsed.data.sharedWithUserId } : { email: parsed.data.sharedWithEmail }), isActive: true } })
   if (!target || !recipient || recipient.id === request.user!.id) {
     response.status(404).json({ success: false, error: { code: 'SHARE_TARGET_NOT_FOUND', message: 'Share target or recipient not found' } })
+    return
+  }
+  const duplicate = await prisma.share.findFirst({
+    where: {
+      ownerId: request.user!.id,
+      sharedWithUserId: recipient.id,
+      ...(parsed.data.fileId ? { fileId: parsed.data.fileId } : { folderId: parsed.data.folderId }),
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+  })
+  if (duplicate) {
+    response.status(409).json({ success: false, error: { code: 'SHARE_ALREADY_EXISTS', message: 'This item is already shared with that user' } })
     return
   }
   const share = await prisma.share.create({ data: { ownerId: request.user!.id, sharedWithUserId: recipient.id, permission: parsed.data.permission, expiresAt: parsed.data.expiresAt, ...(parsed.data.fileId ? { fileId: parsed.data.fileId } : { folderId: parsed.data.folderId }) } })
@@ -153,7 +230,7 @@ router.patch('/shares/:id', async (request, response) => {
 })
 
 router.delete('/shares/:id', async (request, response) => {
-  const share = await prisma.share.findFirst({ where: { id: request.params.id, ownerId: request.user!.id } })
+  const share = await prisma.share.findFirst({ where: { id: request.params.id, OR: [{ ownerId: request.user!.id }, { sharedWithUserId: request.user!.id }] } })
   if (!share) {
     response.status(404).json({ success: false, error: { code: 'SHARE_NOT_FOUND', message: 'Share not found' } })
     return
@@ -168,6 +245,24 @@ async function resolveOwnedTarget(id: string, ownerId: string) {
   if (file) return { type: 'file' as const, id: file.id }
   const folder = await prisma.folder.findFirst({ where: { id, ownerId, deletedAt: null }, select: { id: true } })
   return folder ? { type: 'folder' as const, id: folder.id } : null
+}
+
+async function collectDeletedFolderIds(rootId: string, ownerId: string): Promise<string[]> {
+  const folderIds = new Set<string>([rootId])
+  const queue = [rootId]
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!
+    const children = await prisma.folder.findMany({ where: { ownerId, deletedAt: { not: null }, parentId: currentId } })
+    for (const child of children) {
+      if (!folderIds.has(child.id)) {
+        folderIds.add(child.id)
+        queue.push(child.id)
+      }
+    }
+  }
+
+  return [...folderIds]
 }
 
 export default router
