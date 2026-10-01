@@ -220,18 +220,27 @@ function App() {
 
   async function uploadNext(job: UploadJob) {
     setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, status: 'uploading', percent: 0 } : item))
-    const init = await api.post('/files/upload/initiate', { name: job.file.name, mimeType: job.file.type || 'application/octet-stream', size: job.file.size, folderId })
-    await api.put(init.data.data.uploadPath, job.file, {
-      headers: { 'Content-Type': job.file.type || 'application/octet-stream' },
-      onUploadProgress: (event) => {
-        if (event.total) {
-          const percent = Math.round((event.loaded / event.total) * 100)
-          setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent } : item))
-        }
-      },
-    })
-    await api.post('/files/upload/finalize', { sessionId: init.data.data.sessionId })
-    setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent: 100, status: 'complete' } : item))
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const init = await api.post('/files/upload/initiate', { name: job.file.name, mimeType: job.file.type || 'application/octet-stream', size: job.file.size, folderId })
+        await api.put(init.data.data.uploadPath, job.file, {
+          headers: { 'Content-Type': job.file.type || 'application/octet-stream' },
+          onUploadProgress: (event) => {
+            if (event.total) {
+              const percent = Math.round((event.loaded / event.total) * 100)
+              setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent } : item))
+            }
+          },
+        })
+        await api.post('/files/upload/finalize', { sessionId: init.data.data.sessionId })
+        setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, percent: 100, status: 'complete' } : item))
+        return
+      } catch (error) {
+        const code = (error as { response?: { data?: { error?: { code?: string } } } }).response?.data?.error?.code
+        if (attempt === 0 && code === 'UPLOAD_SESSION_NOT_FOUND') continue
+        throw error
+      }
+    }
   }
 
   async function retryUpload(job: UploadJob) {
