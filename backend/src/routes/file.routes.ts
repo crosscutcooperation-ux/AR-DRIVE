@@ -11,7 +11,7 @@ const nameSchema = z.string().trim().transform(normaliseName).pipe(z.string().mi
 const initSchema = z.object({ name: nameSchema, mimeType: z.string().trim().min(1).max(160), size: z.number().int().positive().max(5 * 1024 * 1024 * 1024), folderId: z.string().cuid().nullable().optional() })
 const updateSchema = z.object({ name: nameSchema.optional(), folderId: z.string().cuid().nullable().optional() }).strict()
 const maxUploadBytes = 5 * 1024 * 1024 * 1024
-const uploadSessionTtlMs = 24 * 60 * 60 * 1000
+const uploadSessionTtlMs = 7 * 24 * 60 * 60 * 1000
 
 router.use(requireAuth, requireActiveUser)
 
@@ -108,6 +108,7 @@ router.put('/upload/:sessionId/content', async (request, response) => {
     response.status(404).json({ success: false, error: { code: 'UPLOAD_SESSION_NOT_FOUND', message: 'Upload session expired or not found' } })
     return
   }
+  await prisma.uploadSession.update({ where: { id: session.id }, data: { expiresAt: new Date(Date.now() + uploadSessionTtlMs) } })
   const existingObject = await storage.objectMetadata(session.storageKey)
   if (existingObject?.size === Number(session.size)) {
     response.status(204).send()
