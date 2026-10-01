@@ -16,7 +16,8 @@ api.interceptors.response.use(
   async (error: AxiosError) => {
     const originalRequest = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined
 
-    if (!originalRequest || error.response?.status !== 401 || originalRequest._retry) {
+    const authRequest = originalRequest?.url?.startsWith('/auth/')
+    if (!originalRequest || error.response?.status !== 401 || originalRequest._retry || authRequest) {
       return Promise.reject(error)
     }
 
