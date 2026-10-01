@@ -11,6 +11,7 @@ const nameSchema = z.string().trim().transform(normaliseName).pipe(z.string().mi
 const initSchema = z.object({ name: nameSchema, mimeType: z.string().trim().min(1).max(160), size: z.number().int().positive().max(5 * 1024 * 1024 * 1024), folderId: z.string().cuid().nullable().optional() })
 const updateSchema = z.object({ name: nameSchema.optional(), folderId: z.string().cuid().nullable().optional() }).strict()
 const maxUploadBytes = 5 * 1024 * 1024 * 1024
+const uploadSessionTtlMs = 24 * 60 * 60 * 1000
 
 router.use(requireAuth, requireActiveUser)
 
@@ -97,7 +98,7 @@ router.post('/upload/initiate', async (request, response) => {
     return
   }
   const key = storage.createFileKey(request.user!.id)
-  const session = await prisma.uploadSession.create({ data: { userId: request.user!.id, folderId: folderAccess?.folder.id ?? null, name, originalName: name, mimeType, size: BigInt(size), storageKey: key, expiresAt: new Date(Date.now() + 15 * 60 * 1000) } })
+  const session = await prisma.uploadSession.create({ data: { userId: request.user!.id, folderId: folderAccess?.folder.id ?? null, name, originalName: name, mimeType, size: BigInt(size), storageKey: key, expiresAt: new Date(Date.now() + uploadSessionTtlMs) } })
   response.status(201).json({ success: true, data: { sessionId: session.id, uploadPath: `/files/upload/${session.id}/content`, expiresAt: session.expiresAt } })
 })
 
