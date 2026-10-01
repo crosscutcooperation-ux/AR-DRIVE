@@ -237,6 +237,7 @@ function App() {
   async function retryUpload(job: UploadJob) {
     try {
       await uploadNext(job)
+      await loadView()
     } catch (error) {
       setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, status: 'failed' } : item))
       setMessage(apiErrorMessage(error, `Upload of ${job.file.name} failed. Check the local storage directory and network.`))
