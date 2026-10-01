@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, stat, truncate, unlink } from 'node:fs/promises'
+import { mkdir, readdir, stat, statfs, truncate, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -68,6 +68,17 @@ export const storage = {
     }
   },
 
+  async usage() {
+    await mkdir(storageRoot, { recursive: true })
+    const filesystem = await statfs(storageRoot)
+    const blockSize = Number(filesystem.bsize)
+    const totalBytes = Number(filesystem.blocks) * blockSize
+    const freeBytes = Number(filesystem.bavail) * blockSize
+    const usedBytes = totalBytes - Number(filesystem.bfree) * blockSize
+    const dataBytes = await directoryBytes(storageRoot)
+    return { totalBytes, usedBytes, freeBytes, dataBytes }
+  },
+
   createReadStream(key: string) {
     return createReadStream(resolveStoragePath(key))
   },
@@ -96,4 +107,15 @@ function resolveStoragePath(key: string) {
 
 function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
+async function directoryBytes(path: string): Promise<number> {
+  const entries = await readdir(path, { withFileTypes: true }).catch((error: unknown) => isMissingFile(error) ? [] : Promise.reject(error))
+  const sizes = await Promise.all(entries.map(async (entry) => {
+    const entryPath = resolve(path, entry.name)
+    if (entry.isDirectory()) return directoryBytes(entryPath)
+    if (entry.isFile()) return (await stat(entryPath)).size
+    return 0
+  }))
+  return sizes.reduce((total, size) => total + size, 0)
 }

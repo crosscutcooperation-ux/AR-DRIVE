@@ -11,6 +11,7 @@ type UploadJob = { id: string; name: string; file: File; percent: number; status
 
 function App() {
   const [user, setUser] = useState<User | null>(null)
+  const [instanceStorage, setInstanceStorage] = useState<{ totalBytes: number; usedBytes: number; freeBytes: number; dataBytes: number } | null>(null)
   const [view, setView] = useState<View>('drive')
   const [folderId, setFolderId] = useState<string | null>(null)
   const [currentFolder, setCurrentFolder] = useState<FolderItem | null>(null)
@@ -51,8 +52,12 @@ function App() {
   const gridRef = useRef<HTMLDivElement>(null)
   const marqueeStart = useRef<{ x: number; y: number } | null>(null)
   const suppressItemClick = useRef(false)
+  const tapSequence = useRef<{ key: string; count: number; timer: number } | null>(null)
 
   useEffect(() => { api.get('/auth/me').then((result) => setUser(result.data.data.user)).catch(() => undefined).finally(() => setLoading(false)) }, [])
+  useEffect(() => {
+    if (user) void api.get('/storage/usage').then((result) => setInstanceStorage(result.data.data.storage)).catch(() => undefined)
+  }, [user])
 
   const loadView = useCallback(async () => {
     setMessage('')
@@ -351,6 +356,30 @@ function App() {
     link.remove()
   }
 
+  function downloadArchive(fileIds: string[], folderIds: string[]) {
+    const baseURL = (api.defaults.baseURL ?? '/api').replace(/\/+$/, '')
+    const url = new URL(`${baseURL}/downloads/archive`, window.location.origin)
+    if (fileIds.length) url.searchParams.set('fileIds', fileIds.join(','))
+    if (folderIds.length) url.searchParams.set('folderIds', folderIds.join(','))
+    const link = document.createElement('a')
+    link.href = url.toString()
+    link.download = 'AR-DRIVE-download.zip'
+    document.body.append(link)
+    link.click()
+    link.remove()
+  }
+
+  function downloadSelectedItems() {
+    const fileIds = [...selectedKeys].filter((key) => key.startsWith('file:')).map((key) => key.slice(5))
+    const folderIds = [...selectedKeys].filter((key) => key.startsWith('folder:')).map((key) => key.slice(7))
+    if (!folderIds.length && fileIds.length === 1) {
+      const file = (searchResults?.files ?? files).find((item) => item.id === fileIds[0])
+      if (file) downloadFile(file)
+      return
+    }
+    downloadArchive(fileIds, folderIds)
+  }
+
   function handleGridClick(event: React.MouseEvent<HTMLDivElement>) {
     if (suppressItemClick.current) {
       suppressItemClick.current = false
@@ -359,13 +388,57 @@ function App() {
     }
     const card = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-selection-key]') : null
     const key = card?.dataset.selectionKey
-    if (!key) return
+    if (!key || event.target instanceof Element && event.target.closest('button')) return
     const additive = event.ctrlKey || event.metaKey || event.shiftKey
     setSelectedKeys((current) => additive ? new Set(current.has(key) ? [...current].filter((itemKey) => itemKey !== key) : [...current, key]) : new Set([key]))
     if (additive) {
       setSelectedFile(null)
       setSelectedFolder(null)
     }
+  }
+
+  function handleItemTapCapture(event: React.MouseEvent<HTMLElement>) {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.file-open, .folder-open') : null
+    const key = target?.closest<HTMLElement>('[data-selection-key]')?.dataset.selectionKey
+    if (!target || !key) return
+    event.stopPropagation()
+
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      setSelectedKeys((current) => new Set(current.has(key) ? [...current].filter((itemKey) => itemKey !== key) : [...current, key]))
+      setSelectedFile(null)
+      setSelectedFolder(null)
+      return
+    }
+
+    const previous = tapSequence.current
+    const count = previous?.key === key ? previous.count + 1 : 1
+    if (previous) window.clearTimeout(previous.timer)
+    setSelectedKeys(new Set([key]))
+    setSelectedFile(null)
+    setSelectedFolder(null)
+    setPreviewFile(null)
+
+    if (count >= 3) {
+      tapSequence.current = null
+      const [kind, id] = key.split(':')
+      if (kind === 'file') setSelectedFile((searchResults?.files ?? files).find((file) => file.id === id) ?? null)
+      else setSelectedFolder((searchResults?.folders ?? folders).find((folder) => folder.id === id) ?? null)
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      if (count === 2) {
+        const [kind, id] = key.split(':')
+        if (kind === 'file') setPreviewFile((searchResults?.files ?? files).find((file) => file.id === id) ?? null)
+        else {
+          setView('drive')
+          setFolderId(id)
+          setSearchResults(null)
+        }
+      }
+      tapSequence.current = null
+    }, 450)
+    tapSequence.current = { key, count, timer }
   }
 
   async function runSearch(event: FormEvent) {
@@ -487,10 +560,10 @@ function App() {
         <NavItem active={view === 'trash'} icon={<Trash2 size={17} />} label="Trash" onClick={() => { setView('trash'); setSearchResults(null) }} />
         {user.role === 'ADMIN' && <NavItem active={view === 'admin'} icon={<Users size={17} />} label="Admin" onClick={() => { setView('admin'); setSearchResults(null) }} />}
       </nav>
-      <div className="storage-card"><span>Storage</span><strong>{formatBytes(user.storageUsed)} used</strong><div className="meter"><i style={{ width: `${Math.min(100, Number(user.storageUsed) / Number(user.storageQuota) * 100)}%` }} /></div><small>of {formatBytes(user.storageQuota)}</small></div>
+      <div className="storage-card"><span>EC2 disk</span><strong>{instanceStorage ? `${formatBytes(String(instanceStorage.usedBytes))} used` : 'Reading disk...'}</strong><div className="meter"><i style={{ width: `${instanceStorage ? Math.min(100, instanceStorage.usedBytes / instanceStorage.totalBytes * 100) : 0}%` }} /></div><small>of {formatBytes(String(instanceStorage?.totalBytes ?? 0))} · {formatBytes(String(instanceStorage?.freeBytes ?? 0))} free</small><small className="storage-account">AR-DRIVE data {formatBytes(String(instanceStorage?.dataBytes ?? 0))} · account {formatBytes(user.storageUsed)} / {formatBytes(user.storageQuota)}</small></div>
       <button className="logout-button" onClick={() => void logout()}><LogOut size={16} /> Sign out</button>
     </aside>
-    <main ref={gridRef} className={`workspace ${dragging ? 'is-dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={handleDrop} onPointerDown={startMarquee} onPointerMove={moveMarquee} onPointerUp={finishMarquee} onClick={handleGridClick}>
+    <main ref={gridRef} className={`workspace ${dragging ? 'is-dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={handleDrop} onPointerDown={startMarquee} onPointerMove={moveMarquee} onPointerUp={finishMarquee} onClickCapture={handleItemTapCapture} onDoubleClickCapture={(event) => { if (event.target instanceof Element && event.target.closest('.file-open, .folder-open')) event.stopPropagation() }} onClick={handleGridClick}>
       <button className="mobile-menu-toggle" type="button" aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-expanded={mobileMenuOpen} onClick={() => setMobileMenuOpen((open) => !open)}><Menu size={19} /></button>
       {dragging && <div className="drop-overlay"><Upload size={28} /><strong>Drop files to upload</strong><span>Files are saved to your local AR-DRIVE storage.</span></div>}
       <header className="workspace-header"><div><p className="eyebrow">Internal workspace</p><h1>{view === 'drive' ? 'My Drive' : view === 'shared' ? 'Shared with me' : view === 'sharing' ? 'Sharing' : view[0].toUpperCase() + view.slice(1)}</h1></div><div className="user-chip"><span>{user.name.slice(0, 1).toUpperCase()}</span>{user.name}</div></header>
@@ -503,11 +576,12 @@ function App() {
       {view === 'admin' && <section className="admin-panel"><div className="admin-toolbar"><h2>User administration</h2><input value={adminSearch} onChange={(event) => setAdminSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadView() }} placeholder="Search users" /></div><div className="admin-table">{adminUsers.map((adminUser) => <div className="admin-row" key={adminUser.id}><div><strong>{adminUser.name}</strong><small>{adminUser.email}</small></div><span>{adminUser.role}</span><span>{adminUser.isActive ? 'Active' : 'Inactive'}</span>{adminUser.id !== user.id && adminUser.isActive && <button className="secondary-button" onClick={() => void deactivateUser(adminUser)}>Deactivate</button>}</div>)}</div></section>}
       {view === 'sharing' && <section className="admin-panel"><div className="admin-toolbar"><h2>Owned shares</h2></div><div className="admin-table">{ownedShares.map((share) => <div className="admin-row" key={share.id}><div><strong>{share.file?.name ?? share.folder?.name}</strong><small>{share.sharedWithUser.name} · {share.sharedWithUser.email}</small></div><select value={share.permission} onChange={(event) => void updateOwnedShare(share, event.target.value as 'VIEW' | 'EDIT')}><option value="VIEW">Can view</option><option value="EDIT">Can edit</option></select><span>{share.expiresAt ? `Expires ${formatDate(share.expiresAt)}` : 'No expiry'}</span><button className="secondary-button" onClick={() => void revokeOwnedShare(share)}>Revoke</button></div>)}</div></section>}
       {view === 'drive' && folderId && <button className="back-button" onClick={() => setFolderId(null)}>&larr; Back to root</button>}
-      {selectedKeys.size > 0 && <div className="selection-toolbar"><span>{selectedKeys.size} selected</span><button type="button" onClick={() => { setSelectedKeys(new Set()); setSelectedFile(null); setSelectedFolder(null) }}>Clear selection</button></div>}
+      {selectedKeys.size > 0 && <div className="selection-toolbar"><span>{selectedKeys.size} selected</span><button type="button" onClick={downloadSelectedItems}><Download size={15} /> Download</button><button type="button" onClick={() => { setSelectedKeys(new Set()); setSelectedFile(null); setSelectedFolder(null) }}>Clear selection</button></div>}
       <div className={`content-grid ${layout === 'list' ? 'list-layout' : ''}`}>{visibleFolders.map((folder) => <article className="item-card folder-item" key={folder.id} onClick={() => { setSelectedFolder(folder); setSelectedFile(null) }}><button className="folder-open" onDoubleClick={() => { setView('drive'); setFolderId(folder.id); setSearchResults(null) }}><Folder size={27} /><span>{folder.name}</span><small>Folder</small></button><button className="folder-menu-trigger" aria-label={`Actions for ${folder.name}`} aria-expanded={folderMenuId === folder.id} onClick={() => setFolderMenuId(folderMenuId === folder.id ? null : folder.id)}><MoreHorizontal size={18} /></button>{folderMenuId === folder.id && <div className="folder-menu" role="menu">{view === 'trash' ? <><button role="menuitem" onClick={() => void restoreTrashItem(folder.id)}><RotateCcw size={15} /> Restore</button><button role="menuitem" onClick={() => void deleteForever(folder.id, 'folder')}><Trash2 size={15} /> Delete forever</button></> : <button role="menuitem" onClick={() => void deleteFolder(folder)}><Trash2 size={15} /> Move to trash</button>}</div>}</article>)}{visibleFiles.map((file) => <article className="item-card file-item" key={file.id} onClick={() => { setSelectedFile(file); setSelectedFolder(null) }}><button className="file-open" onClick={() => setPreviewFile(file)} onDoubleClick={() => void openFile(file)}>{isImage(file) ? <img className="file-thumb" src={previewUrl(file)} alt="" /> : <File size={27} />}<span>{file.name}</span><small>{formatBytes(file.size)}</small></button><button className="file-menu-trigger" aria-label={`Actions for ${file.name}`} aria-expanded={fileMenuId === file.id} onClick={() => setFileMenuId(fileMenuId === file.id ? null : file.id)}><MoreHorizontal size={18} /></button>{fileMenuId === file.id && <div className="file-menu folder-menu" role="menu">{view === 'trash' ? <><button role="menuitem" onClick={() => void restoreTrashItem(file.id)}><RotateCcw size={15} /> Restore</button><button role="menuitem" onClick={() => void deleteForever(file.id, 'file')}><Trash2 size={15} /> Delete forever</button></> : <><button role="menuitem" onClick={() => openRenameDialog(file)}>Rename</button><button role="menuitem" onClick={() => void deleteFile(file)}><Trash2 size={15} /> Move to trash</button></>}</div>}</article>)}</div>
       {(selectedFile || selectedFolder) && <aside className="details-panel"><button className="details-close" aria-label="Close details" onClick={() => { setSelectedFile(null); setSelectedFolder(null) }}><X size={17} /></button>{selectedFile ? <><File size={30} /><h2>{selectedFile.name}</h2><dl><dt>Type</dt><dd>{selectedFile.mimeType}</dd><dt>Size</dt><dd>{formatBytes(selectedFile.size)}</dd><dt>Modified</dt><dd>{formatDate(selectedFile.updatedAt)}</dd></dl></> : <><Folder size={30} /><h2>{selectedFolder?.name}</h2><dl><dt>Type</dt><dd>Folder</dd><dt>Modified</dt><dd>{formatDate(selectedFolder?.updatedAt ?? '')}</dd></dl></>} {view === 'shared' ? <button className="secondary-button details-move" onClick={() => void removeSharedAccess()}>Remove access</button> : view !== 'trash' && <><button className="secondary-button details-move" onClick={() => void openMoveDialog()}>Move</button><button className="secondary-button details-move" onClick={() => void toggleStarSelected()}><Star size={15} /> {view === 'starred' ? 'Unstar' : 'Star'}</button><button className="secondary-button details-move" onClick={() => setShareDialogOpen(true)}><Users size={15} /> Share</button></>}</aside>}
       {!visibleFolders.length && !visibleFiles.length && <div className="empty-state"><LayoutGrid size={28} /><strong>Nothing here yet</strong><span>Create a folder or upload a file to get started.</span></div>}
       {selectedFile && view !== 'trash' && <button className="details-download secondary-button" type="button" onClick={() => downloadFile(selectedFile)}><Download size={16} /> Download</button>}
+      {selectedFolder && view !== 'trash' && <button className="details-download secondary-button" type="button" onClick={() => downloadArchive([], [selectedFolder.id])}><Download size={16} /> Download ZIP</button>}
       {marquee && <div className="selection-rectangle" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
     </main>
     {folderDialogOpen && <div className="dialog-backdrop"><section className="folder-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title"><button className="dialog-close" aria-label="Close" onClick={() => setFolderDialogOpen(false)}><X size={18} /></button><p className="eyebrow">My Drive</p><h2 id="folder-dialog-title">Create a folder</h2><form onSubmit={(event) => void createFolder(event)}><label htmlFor="new-folder-name">Folder name</label><input id="new-folder-name" autoFocus value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} maxLength={120} required /><div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setFolderDialogOpen(false)}>Cancel</button><button type="submit" className="primary-button">Create folder</button></div></form></section></div>}

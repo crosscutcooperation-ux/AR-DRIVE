@@ -26,6 +26,8 @@ Errors use the matching `success: false` envelope. Current endpoints include:
 - `DELETE /api/folders/:id`
 - `GET /api/files`
 - `GET /api/files/:id/download`
+- `GET /api/downloads/archive?fileIds=...&folderIds=...` (authorized ZIP download)
+- `GET /api/storage/usage` (EC2 filesystem and AR-DRIVE storage usage)
 - `POST /api/files/upload/initiate`
 - `PUT /api/files/upload/:sessionId/chunk` (raw chunk body with a `Content-Range` header)
 - `POST /api/files/upload/finalize`

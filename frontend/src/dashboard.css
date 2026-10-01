@@ -19,7 +19,8 @@ button { cursor: pointer; }
 .auth-switch { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--rust); font-size: 12px; }.auth-switch:hover { text-decoration: underline; }
 .item-card.selected { border-color: var(--rust); background: #fffefa; box-shadow: inset 0 0 0 1px var(--rust); }
 .selection-toolbar { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; color: var(--muted); font-size: 12px; }
-.selection-toolbar button { padding: 0; border: 0; background: transparent; color: var(--rust); }
+.selection-toolbar button { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--rust); }
+.storage-account { display: block; margin-top: 7px; line-height: 1.5; }
 .mobile-menu-toggle, .mobile-menu-backdrop { display: none; }
 .selection-rectangle { position: fixed; z-index: 6; border: 1px solid var(--rust); background: rgba(155,77,50,.12); pointer-events: none; }
 .details-download { position: fixed; z-index: 6; right: 24px; bottom: 24px; display: inline-flex; align-items: center; gap: 8px; background: var(--paper); }
