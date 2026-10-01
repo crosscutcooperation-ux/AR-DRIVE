@@ -246,6 +246,7 @@ function App() {
 
   async function uploadFiles(selected: FileList | null) {
     if (!selected) return
+    setMessage('')
     const jobs = Array.from(selected).map((file) => ({ id: `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 9)}`, name: file.name, file, percent: 0, status: 'queued' as const }))
     setUploadQueue(jobs)
     let uploadError = ''
